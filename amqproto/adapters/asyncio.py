@@ -20,18 +20,12 @@ class AMQP(asyncio.StreamReaderProtocol):
         super().data_received(data)
 
         frames = self.connection.receive_frames(data)
-        d = self.connection.data_to_send()
-        print(d)
-
-        self.transport.write(d)
+        self.transport.write(self.connection.data_to_send())
 
         for frame in frames:
             self.connection.handle_frame(frame)
 
-        d = self.connection.data_to_send()
-        print(d)
-
-        self.transport.write(d)
+        self.transport.write(self.connection.data_to_send())
 
 
 _DEFAULT_LIMIT = 2 ** 16
