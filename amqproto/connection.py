@@ -7,130 +7,16 @@ from concurrent.futures import Future
 
 import amqpframe
 import amqpframe.methods
+from amqpframe.frames import FRAME_MIN_SIZE
 
+from fsmpy import FunctionalMachine
+
+from . import fsm
 from . import channel
 from . import auth as _auth_methods
-from .fsm import Transition as T, Machine
 from .abstract_channel import AbstractChannel
 
-
 logger = logging.getLogger(__name__)
-
-
-class ConnectionFSM:
-    initial_state = 'connection_inactive'
-
-    states = [
-        'connection_inactive',
-
-        # Handshake states
-        'sent_ProtocolHeaderFrame',
-        'received_ConnectionStart',
-        'sent_ConnectionStartOK',
-        'received_ConnectionSecure',
-        'sent_ConnectionSecureOK',
-        'received_ConnectionTune',
-        'sent_ConnectionTuneOK',
-        'sent_ConnectionOpen',
-
-        # Working state
-        'connection_active',
-
-        # Channels states
-        'sent_ChannelOpen',
-        'sent_ChannelClose',
-        'received_ChannelClose',
-
-        # Disconnect states
-        'received_ConnectionClose',
-        'sent_ConnectionClose',
-    ]
-
-    transitions = [
-        T(event='send_ProtocolHeaderFrame',
-          source='connection_inactive',
-          dest='sent_ProtocolHeaderFrame'),
-
-        T(event='received_ProtocolHeaderFrame',
-          source='sent_ProtocolHeaderFrame',
-          dest='connection_inactive'),
-
-        T(event='receive_ConnectionStart',
-          source='sent_ProtocolHeaderFrame',
-          dest='received_ConnectionStart'),
-
-        T(event='send_ConnectionStartOK',
-          source='received_ConnectionStart',
-          dest='sent_ConnectionStartOK'),
-
-        T(event='receive_ConnectionSecure',
-          source='sent_ConnectionStartOK',
-          dest='received_ConnectionSecure'),
-
-        T(event='send_ConnectionSecureOK',
-          source='received_ConnectionSecure',
-          dest='sent_ConnectionSecureOK'),
-
-        T(event='receive_ConnectionTune',
-          source='sent_ConnectionSecureOK',
-          dest='received_ConnectionTune'),
-
-        T(event='send_ConnectionTuneOK',
-          source='received_ConnectionTune',
-          dest='sent_ConnectionTuneOK'),
-
-        T(event='send_ConnectionOpen',
-          source='sent_ConnectionTuneOK',
-          dest='sent_ConnectionOpen'),
-
-        T(event='receive_ConnectionOpenOK',
-          source='sent_ConnectionOpen',
-          dest='connection_active'),
-
-        T(event='send_ChannelOpen',
-          source='connection_active',
-          dest='sent_ChannelOpen'),
-
-        T(event='receive_ChannelOpenOK',
-          source='sent_ChannelOpen',
-          dest='connection_active'),
-
-        T(event='receive_ChannelOpenOK',
-          source='sent_ChannelOpen',
-          dest='connection_active'),
-
-        T(event='send_ChannelClose',
-          source='connection_active',
-          dest='sent_ChannelClose'),
-
-        T(event='receive_ChannelCloseOK',
-          source='sent_ChannelClose',
-          dest='connection_active'),
-
-        T(event='receive_ChannelClose',
-          source='connection_active',
-          dest='received_ChannelClose'),
-
-        T(event='send_ChannelCloseOK',
-          source='received_ChannelClose',
-          dest='connection_active'),
-
-        T(event='receive_ConnectionClose',
-          source='connection_active',
-          dest='received_ConnectionClose'),
-
-        T(event='send_ConnectionCloseOK',
-          source='received_ConnectionClose',
-          dest='connection_inactive'),
-
-        T(event='send_ConnectionClose',
-          source='connection_active',
-          dest='sent_ConnectionClose'),
-
-        T(event='receive_ConnectionCloseOK',
-          source='sent_ConnectionClose',
-          dest='connection_inactive'),
-    ]
 
 
 # The properties SHOULD contain at least these fields:
@@ -167,11 +53,13 @@ class Connection(AbstractChannel):
 
         super().__init__(channel_id=0)
 
-        self._fsm = Machine(transitions=ConnectionFSM.transitions,
-                            states=ConnectionFSM.states,
-                            initial_state=ConnectionFSM.initial_state)
+        self._fsm = FunctionalMachine(
+            transitions=fsm.Connection.transitions,
+            states=fsm.Connection.states,
+            initial_state=fsm.Connection.initial_state
+        )
 
-        self._channel_factory = channel.channel_factory()
+        self._channel_factory = None
         self._channels = {}
 
         self._virtual_host = virtual_host
@@ -202,10 +90,26 @@ class Connection(AbstractChannel):
             'secure': {'response': None},
         }
 
-        self._connection_properties = {
-            'channel_max': channel_max,
-            'frame_max': frame_max,
-            'heartbeat': heartbeat,
+        self._tune_properties = {
+            'client': {
+                'channel_max': channel_max,
+                'frame_max': frame_max,
+                'heartbeat': heartbeat,
+            },
+            'server': {
+                'channel_max': None,
+                'frame_max': None,
+                'heartbeat': None,
+            },
+        }
+
+        self.properties = {
+            # Irrelevant until receive_ConnectionTune is called
+            'channel_max': None,
+            'heartbeat': None,
+            # Before max frame size is negotiated, FRAME_MIN_SIZE
+            # is max frame size (yeah).
+            'frame_max': FRAME_MIN_SIZE,
         }
 
     def _setup_method_handlers(self):
@@ -215,18 +119,14 @@ class Connection(AbstractChannel):
             methods.ConnectionSecure: self.receive_ConnectionSecure,
             methods.ConnectionTune: self.receive_ConnectionTune,
             methods.ConnectionOpenOK: self.receive_ConnectionOpenOK,
-            methods.ChannelOpenOK: self.receive_ChannelOpenOK,
             methods.ConnectionClose : self.receive_ConnectionClose,
             methods.ConnectionCloseOK: self.receive_ConnectionCloseOK,
         }
 
-    def data_to_send(self):
-        own_data = super().data_to_send()
-        channels_data = (ch.data_to_send() for ch in self._channels.values())
-        return b''.join(itertools.chain([own_data], channels_data))
-
-    def initiate_connection(self):
-        self.send_ProtocolHeaderFrame()
+    def _send_method(self, method):
+        self._fsm.trigger('send_' + method.__class__.__name__)
+        frame = amqpframe.MethodFrame(self._channel_id, method)
+        frame.to_bytestream(self._buffer)
 
     def handle_frame(self, frame):
         channel_id = frame.channel_id
@@ -242,6 +142,15 @@ class Connection(AbstractChannel):
             self.receive_ProtocolHeaderFrame(frame)
         elif isinstance(frame, amqpframe.HeartbeatFrame):
             pass
+
+    def initiate_connection(self):
+        self.send_ProtocolHeaderFrame()
+        return self._fut
+
+    def get_channel(self):
+        channel = self._channel_factory(self.properties['frame_max'])
+        self._channels[channel._channel_id] = channel
+        return channel
 
     def handle_MethodFrame(self, frame):
         self._fsm.trigger('receive_' + frame.payload.__class__.__name__)
@@ -275,7 +184,6 @@ class Connection(AbstractChannel):
 
     def receive_ConnectionStart(self, frame):
         logger.debug('Receiving ConnectionStart')
-        logger.debug(frame.payload)
 
         method = frame.payload
         assert method.version_major == self._protocol_major
@@ -320,12 +228,11 @@ class Connection(AbstractChannel):
             response=response,
             locale=locale
         )
-        logger.debug(method)
         self._send_method(method)
 
     def receive_ConnectionSecure(self, frame):
         logger.debug('Receiving ConnectionSecure')
-        method = frame.method
+        method = frame.payload
         # Fail-fast
         response = self._auth.handle_challenge(method.challenge)
         if response is None:
@@ -344,30 +251,38 @@ class Connection(AbstractChannel):
 
     def receive_ConnectionTune(self, frame):
         logger.debug('Receiving ConnectionTune')
-        method = frame.method
+        method = frame.payload
         for item in ('channel_max', 'frame_max', 'heartbeat'):
-            client_value = self._connection_properties[item]
+            client_value = self._tune_properties['client'][item]
             server_value = getattr(method, item)
-            if client_value > server_value:
-                self._connection_properties[item] = server_value
+            self._tune_properties['server'][item] = server_value
 
-        logger.debug(self._connection_properties)
+            if client_value == 0 or server_value == 0:
+                self.properties[item] = max(client_value, server_value)
+            else:
+                self.properties[item] = min(client_value, server_value)
 
+        self._channel_factory = channel.channel_factory(
+            channel_max=self.properties['channel_max']
+        )
         self.send_ConnectionTuneOK()
 
     def send_ConnectionTuneOK(self):
         logger.debug('Sending ConnectionTuneOK')
-        method = amqpframe.methods.ConnectionTuneOK(
-            **self._connection_properties
+        method = amqpframe.methods.ConnectionTuneOK(**self.properties)
+        self._send_method(method)
+
+        self.send_ConnectionOpen()
+
+    def send_ConnectionOpen(self):
+        logger.debug('Sending ConnectionOpen')
+        method = amqpframe.methods.ConnectionOpen(
+            virtual_host=self._virtual_host
         )
         self._send_method(method)
 
-    def send_ConnectionOpen(self):
-        method = amqpframe.methods.ConnectionOpen(self._virtual_host)
-        self._send_method(method)
-        return self._fut
-
     def receive_ConnectionOpenOK(self, frame):
+        logger.debug('Receiving ConnectionOpenOK')
         self._fut.set_result(frame.payload)
         self._fut = Future()
 
@@ -375,7 +290,8 @@ class Connection(AbstractChannel):
                              reply_code, reply_text,
                              class_id=0, method_id=0):
         method = amqpframe.methods.ConnectionClose(
-            reply_code, reply_text, class_id, method_id
+            reply_code=reply_code, reply_text=reply_text,
+            class_id=class_id, method_id=method_id
         )
         self._send_method(method)
         return self._fut
@@ -385,6 +301,7 @@ class Connection(AbstractChannel):
         self._fut = Future()
 
     def receive_ConnectionClose(self, frame):
+        method = frame.payload
         logger.error({'event': 'ConnectionClose',
                       'reply_code': method.reply_code,
                       'reply_text': method.reply_text,
@@ -396,12 +313,3 @@ class Connection(AbstractChannel):
     def send_ConnectionCloseOK(self):
         method = amqpframe.methods.ConnectionCloseOK()
         self._send_method(method)
-
-    def send_ChannelOpen(self):
-        method = amqpframe.methods.ChannelOpen()
-        self._send_method(method)
-        return self._fut
-
-    def receive_ChannelOpenOK(self, frame):
-        self._fut.set_result(frame.payload)
-        self._fut = Future()

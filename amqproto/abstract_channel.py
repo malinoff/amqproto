@@ -33,7 +33,3 @@ class AbstractChannel:
         method = frame.payload
         handler = self._method_handlers[method.__class__]
         handler(frame)
-
-    def _send_method(self, method):
-        frame = MethodFrame(self._channel_id, method)
-        frame.to_bytestream(self._buffer)

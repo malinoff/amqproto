@@ -25,10 +25,13 @@ codestyle-autoformat: codestyle-deps
 codestyle-deps:
 	$(PIP) install -r requirements/codestyle.txt
 
-unittests: unittests-deps
-	$(PYTEST) -v -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests
+integrationtests: tests-deps
+	$(PYTEST) -v -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/integration
 
-unittests-deps:
+unittests: tests-deps
+	$(PYTEST) -v -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/unit
+
+tests-deps:
 	$(PIP) install -r requirements/test.txt
 
 devtools:

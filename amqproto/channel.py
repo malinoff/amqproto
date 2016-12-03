@@ -1,4 +1,5 @@
 import io
+import logging
 import functools
 import itertools
 import collections
@@ -8,186 +9,29 @@ import amqpframe
 import amqpframe.basic
 import amqpframe.methods
 
-from .fsm import Transition as T, Machine
+from fsmpy import FunctionalMachine
+
+from . import fsm
 from .abstract_channel import AbstractChannel
 
-
-class FramingFSM:
-    initial_state = 'channel_idle'
-
-    states = [
-        'channel_idle',
-        'sent_MethodFrame',
-        'received_MethodFrame',
-        'sent_ContentHeaderFrame',
-        'received_ContentHeaderFrame',
-    ]
-
-    transitions = [
-        # Client sends something to the server
-        T(event='send_MethodFrame',
-          source='channel_idle',
-          dest='sent_MethodFrame'),
-
-        # and received its response.
-        T(event='receive_MethodFrame',
-          source='sent_MethodFrame',
-          dest='received_MethodFrame'),
-
-        # Client sends something asynchronously.
-        T(event='send_MethodFrame_nowait',
-          source='channel_idle',
-          dest='channel_idle'),
-
-        # Server sends something to the client
-        T(event='receive_MethodFrame',
-          source='channel_idle',
-          dest='received_MethodFrame'),
-
-        # and receives clients response.
-        T(event='send_MethodFrame',
-          source='received_MethodFrame',
-          dest='channel_idle'),
-
-        # If ContentHeader comes after MethodFrame,
-        T(event='receive_ContentHeaderFrame',
-          source='received_MethodFrame',
-          dest='received_ContentHeaderFrame'),
-
-        # zero or more ContentBody frames can arrive.
-        T(event='receive_ContentBodyFrame',
-          source='received_ContentHeaderFrame',
-          dest='received_ContentHeaderFrame'),
-
-        # If a MethodFrame arrives, treat this as the end of the body.
-        T(event='receive_MethodFrame',
-          source='received_ContentHeaderFrame',
-          dest='received_MethodFrame'),
-
-        # Same for the client.
-        # If ContentHeader comes after MethodFrame,
-        T(event='send_ContentHeaderFrame',
-          source='sent_MethodFrame',
-          dest='sent_ContentHeaderFrame'),
-
-        # zero or more ContentBody frames can be sent.
-        T(event='send_ContentBodyFrame',
-          source='sent_ContentHeaderFrame',
-          dest='sent_ContentHeaderFrame'),
-
-        # If a MethodFrame is sent, treat this as the end of the body.
-        T(event='send_MethodFrame',
-          source='sent_ContentHeaderFrame',
-          dest='sent_MethodFrame'),
-
-        # Don't forget about asynchronous methods.
-        T(event='send_MethodFrame_nowait',
-          source='sent_ContentHeaderFrame',
-          dest='channel_idle'),
-
-    ]
-
-
-class ConfirmFSM:
-    states = [
-        'sent_ConfirmSelect',
-    ]
-
-    transitions = [
-        T(event='send_ConfirmSelect',
-          # A channel can't be selected to work in confirmation mode
-          # if it's already in confirmation mode or a transaction is active.
-          source='channel_idle',
-          dest='sent_ConfirmSelect'),
-
-        T(event='received_ConfirmSelectOK',
-          source='sent_ConfirmSelect',
-          dest='channel_active_confirm'),
-
-        T(event='send_ConfirmSelect_nowait',
-          source='channel_idle',
-          dest='channel_idle_confirm'),
-
-        # If confirm mode is enabled, BasicPublish should wait for BasicAck.
-        T(event='send_BasicPublish',
-          source='channel_idle_confirm',
-          dest='sent_BasicPublish_confirm'),
-
-        T(event='receive_BasicAck',
-          source='sent_BasicPublish_confirm',
-          dest='channel_idle_confirm'),
-    ]
-
-
-
-
-class ChannelFSM:
-    from .tx import TxFSM
-    from .basic import BasicFSM
-    from .queue import QueueFSM
-    from .exchange import ExchangeFSM
-
-    initial_state = 'channel_idle'
-
-    states = (['channel_idle',
-               'channel_idle_tx',
-               'channel_idle_confirm'] +
-              ExchangeFSM.states +
-              QueueFSM.states +
-              BasicFSM.states +
-              ConfirmFSM.states +
-              # Don't forget to add transaction-aware states
-              [state + '_tx'
-               for state in itertools.chain(
-                   ExchangeFSM.states,
-                   QueueFSM.states,
-                   BasicFSM.states)] +
-              # Don't forget to add confirm-aware states
-              [state + '_confirm'
-               for state in itertools.chain(
-                   ExchangeFSM.states,
-                   QueueFSM.states,
-                   BasicFSM.states)] +
-              TxFSM.states)
-
-    transitions = (ExchangeFSM.transitions +
-                   QueueFSM.transitions +
-                   BasicFSM.transitions +
-                   ConfirmFSM.transitions +
-                   # Don't forget to add transaction-aware transitions
-                   [T(event=t.event, source=t.source + '_tx',
-                      dest=t.dest+'_tx')
-                    for t in itertools.chain(
-                        ExchangeFSM.transitions,
-                        QueueFSM.transitions,
-                        BasicFSM.transitions)] +
-                   # Don't forget to add confirm-aware transitions
-                   [T(event=t.event, source=t.source + '_confirm',
-                      dest=t.dest+'_confirm')
-                    for t in itertools.chain(
-                        ExchangeFSM.transitions,
-                        QueueFSM.transitions,
-                        BasicFSM.transitions)] +
-                   TxFSM.transitions)
-
-    # Cleanup helpers
-    del TxFSM
-    del BasicFSM
-    del QueueFSM
-    del ExchangeFSM
+logger = logging.getLogger(__name__)
 
 
 class Channel(AbstractChannel):
 
-    def __init__(self, channel_id):
+    def __init__(self, channel_id, frame_max):
         super().__init__(channel_id)
 
-        self._fsm = Machine(transitions=ChannelFSM.transitions,
-                            states=ChannelFSM.states,
-                            initial_state=ChannelFSM.initial_state)
-        self._framing_fsm = Machine(transitions=FramingFSM.transitions,
-                                    states=FramingFSM.states,
-                                    initial_state=FramingFSM.initial_state)
+        self._fsm = FunctionalMachine(
+            transitions=fsm.Channel.transitions,
+            states=fsm.Channel.states,
+            initial_state=fsm.Channel.initial_state,
+        )
+        self._framing_fsm = FunctionalMachine(
+            transitions=fsm.ChannelFraming.transitions,
+            states=fsm.ChannelFraming.states,
+            initial_state=fsm.ChannelFraming.initial_state,
+        )
 
         # amqpframe.basic.Message is instantiated in received_BasicDeliver,
         # its delivery_info is set. Later, basic properties are set in
@@ -195,6 +39,8 @@ class Channel(AbstractChannel):
         # handle_frame: ContentBodyFrame
         self._message = None
         self._message_fut = None
+
+        self._frame_max = frame_max
 
         # Consumer callback
         self._on_message_received = None
@@ -204,6 +50,9 @@ class Channel(AbstractChannel):
     def _setup_method_handlers(self):
         methods = amqpframe.methods
         return {
+            methods.ChannelOpenOK: self.receive_ChannelOpenOK,
+            methods.ChannelClose: self.receive_ChannelClose,
+            methods.ChannelCloseOK: self.receive_ChannelCloseOK,
             methods.ChannelFlow: self.receive_ChannelFlow,
             methods.ChannelFlowOK: self.receive_ChannelFlowOK,
 
@@ -228,41 +77,69 @@ class Channel(AbstractChannel):
             methods.BasicRecoverOK: self.receive_BasicRecoverOK,
             methods.BasicReturn: self.receive_BasicReturn,
 
-            methods.ConfirmSelectOk: self.receive_ConfirmSelectOk,
+            methods.ConfirmSelectOK: self.receive_ConfirmSelectOK,
 
             methods.TxSelectOK: self.receive_TxSelectOK,
             methods.TxCommitOK: self.receive_TxCommitOK,
             methods.TxRollbackOK: self.receive_TxRollbackOK,
         }
 
+    def _send_method(self, method):
+        logger.debug('Sending %s [channel_id:%s]', method.__class__.__name__, self._channel_id)
+        if getattr(method, 'no_wait', False) or getattr(method, 'nowait', False):
+            event = 'send_MethodFrame_nowait'
+        elif getattr(method, 'content', False):
+            event = 'send_MethodFrame_content'
+        else:
+            event = 'send_MethodFrame'
+        self._framing_fsm.trigger(event)
+        self._fsm.trigger('send_' + method.__class__.__name__)
+        frame = amqpframe.MethodFrame(self._channel_id, method)
+        frame.to_bytestream(self._buffer)
+
     def handle_frame(self, frame):
         if isinstance(frame, amqpframe.MethodFrame):
-            self._framing_fsm.trigger('received_MethodFrame')
+            method = frame.payload
+            logger.debug('Receiving %s [channel_id:%s]', method.__class__.__name__, self._channel_id)
+            if getattr(method, 'content', False):
+                event = 'receive_MethodFrame_content'
+            else:
+                event = 'receive_MethodFrame'
+            self._framing_fsm.trigger(event)
             if self._message is not None:
                 # A peer decided to stop sending the message for some reason
                 self._process_message()
-            self.receive_MethodFrame(frame)
+            self._fsm.trigger('receive_' + frame.payload.__class__.__name__)
+            self.handle_MethodFrame(frame)
 
         elif isinstance(frame, amqpframe.ContentHeaderFrame):
-            self._framing_fsm.trigger('received_ContentHeaderFrame')
+            self._framing_fsm.trigger('receive_ContentHeaderFrame')
+
             self._message.__dict__.update(**frame.payload.properties)
             self._message.body_size = frame.payload.body_size
             if self._message.body_size == 0:
                 self._process_message()
 
         elif isinstance(frame, amqpframe.ContentBodyFrame):
-            self._framing_fsm.trigger('received_ContentBodyFrame')
-            self._message.body += frame.payload
+            self._framing_fsm.trigger('receive_ContentBodyFrame')
+
+            self._message.body += frame.payload.data
             if len(self._message.body) == self._message.body_size:
                 # Message is received completely
                 self._process_message()
 
-    def handle_MethodFrame(self, frame):
-        self._fsm.trigger('receive_' + frame.payload.__class__.__name__)
-        super().handle_MethodFrame(frame)
+    def send_ContentHeaderFrame(self, payload):
+        self._framing_fsm.trigger('send_ContentHeaderFrame')
+        frame = amqpframe.ContentHeaderFrame(self._channel_id, payload)
+        frame.to_bytestream(self._buffer)
+
+    def send_ContentBodyFrame(self, payload):
+        self._framing_fsm.trigger('send_ContentBodyFrame')
+        frame = amqpframe.ContentBodyFrame(self._channel_id, payload)
+        frame.to_bytestream(self._buffer)
 
     def _process_message(self):
-        message, seld._message = self._message, None
+        message, self._message = self._message, None
         if self._message_fut is not None:
             self._message_fut.set_result(message)
             self._message_fut = None
@@ -277,6 +154,36 @@ class Channel(AbstractChannel):
         fut = self.send_ConfirmSelect(no_wait)
         if fut is not None:
             return fut.result(timeout)
+
+    def send_ChannelOpen(self):
+        method = amqpframe.methods.ChannelOpen()
+        self._send_method(method)
+        return self._fut
+
+    def receive_ChannelOpenOK(self, frame):
+        self._fut.set_result(frame.payload)
+        self._fut = Future()
+
+    def send_ChannelClose(self, reply_code, reply_text, class_id=0, method_id=0):
+        method = amqpframe.methods.ChannelClose(
+            reply_code=reply_code, reply_text=reply_text,
+            class_id=class_id, method_id=method_id,
+        )
+        self._send_method(method)
+        return self._fut
+
+    def receive_ChannelCloseOK(self, frame):
+        self._fut.set_result(frame.payload)
+        self._fut = Future()
+
+    def receive_ChannelClose(self, frame):
+        logger.debug(frame.payload)
+        self.send_ChannelCloseOK()
+
+    def send_ChannelCloseOK(self):
+        method = amqpframe.methods.ChannelCloseOK()
+        self._send_method(method)
+        return self._fut
 
     def send_ChannelFlow(self, active):
         method = amqpframe.methods.ChannelFlow(active=active)
@@ -307,7 +214,8 @@ class Channel(AbstractChannel):
             arguments=arguments
         )
         self._send_method(method)
-        return self._fut
+        if not no_wait:
+            return self._fut
 
     def receive_ExchangeDeclareOK(self, frame):
         self._fut.set_result(frame.payload)
@@ -459,15 +367,25 @@ class Channel(AbstractChannel):
 
     def send_BasicPublish(self, message, exchange='', routing_key='',
                           mandatory=False, immediate=False):
-        method = amqpframe.methods.BasicCancel(
-            consumer_tag=consumer_tag, no_wait=no_wait
+        method = amqpframe.methods.BasicPublish(
+            exchange=exchange, routing_key=routing_key,
+            mandatory=mandatory, immediate=immediate,
         )
         self._send_method(method)
-        # TODO magic with Content(Header|Body)Frame
+
+        header_payload = amqpframe.ContentHeaderPayload(
+            class_id=method.method_type[0],
+            body_size=message.body_size,
+            properties=message.properties,
+        )
+        self.send_ContentHeaderFrame(header_payload)
+
+        body_payload = amqpframe.ContentBodyPayload(message.body)
+        self.send_ContentBodyFrame(body_payload)
+
 
     def receive_BasicReturn(self, frame):
-        # TODO implement this
-        pass
+        raise NotImplementedError()
 
     def receive_BasicDeliver(self, frame):
         self._message = amqpframe.basic.Message(delivery_info=frame.payload)
@@ -526,6 +444,9 @@ class Channel(AbstractChannel):
         )
         self._send_method(method)
 
+    def receive_ConfirmSelectOK(self, frame):
+        pass
+
     def send_TxSelect(self):
         method = amqpframe.methods.TxSelect()
         self._send_method(method)
@@ -564,14 +485,14 @@ class Channel(AbstractChannel):
         self._fut = Future()
 
 
-def channel_factory():
+def channel_factory(channel_max):
     next_channel_id = 1
 
-    def produce_channel(*args, **kwargs):
+    def produce_channel(frame_max):
         nonlocal next_channel_id
         channel_id = next_channel_id
         next_channel_id += 1
 
-        return Channel(id=channel_id)
+        return Channel(channel_id, frame_max)
 
     return produce_channel
