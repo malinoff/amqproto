@@ -173,8 +173,9 @@ def test_can_recieve_message(loop, exchange):
     async def setup():
         await queue.declare()
         await queue.bind(exchange)
+        await exchange.publish(Message('this is a test message'))
 
-    run_async(setup())
+    run_async(loop, setup())
 
     # Do the test
     async def test():
