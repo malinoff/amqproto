@@ -92,10 +92,19 @@ class Exchange:
         self._channel._transport.write(ch.data_to_send())
         return asyncio.wrap_future(fut, loop=self._channel._protocol.loop)
 
-    def publish(self, message):
+    def publish(self, message, routing_key='',
+                mandatory=False, immediate=False):
         ch = self._channel._channel
-        ch.send_BasicPublish(message, self.name)
+        fut = ch.send_BasicPublish(message, self.name, routing_key=routing_key,
+                                   mandatory=mandatory, immediate=immediate)
         self._channel._transport.write(ch.data_to_send())
+        return asyncio.wrap_future(fut, loop=self._channel._protocol.loop)
+
+    def delete(self):
+        ch = self._channel._channel
+        fut = ch.send_ExchangeDelete(self.name)
+        self._channel._transport.write(ch.data_to_send())
+        return asyncio.wrap_future(fut, loop=self._channel._protocol.loop)
 
 
 class Queue:
@@ -113,7 +122,16 @@ class Queue:
         return asyncio.wrap_future(fut, loop=self.loop)
 
     def bind(self, exchange):
+        if isinstance(exchange, Exchange):
+            exchange = exchange.name
         fut = self.channel.send_QueueBind(self.name, exchange=exchange)
+        self._transport.write(self.channel.data_to_send())
+        return asyncio.wrap_future(fut, loop=self.loop)
+
+    def unbind(self, exchange):
+        if isinstance(exchange, Exchange):
+            exchange = exchange.name
+        fut = self.channel.send_QueueUnbind(self.name, exchange=exchange)
         self._transport.write(self.channel.data_to_send())
         return asyncio.wrap_future(fut, loop=self.loop)
 
@@ -121,4 +139,9 @@ class Queue:
         fut = self.channel.send_BasicGet(self.name)
         self._transport.write(self.channel.data_to_send())
         fut = await asyncio.wrap_future(fut, loop=self.loop)
-        return (await asyncio.wrap_future(fut, loop=self.loop))
+        return await asyncio.wrap_future(fut, loop=self.loop)
+
+    def delete(self):
+        fut = self.channel.send_QueueDelete(self.name)
+        self._transport.write(self.channel.data_to_send())
+        return asyncio.wrap_future(fut, loop=self.loop)

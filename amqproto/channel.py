@@ -382,7 +382,8 @@ class Channel(AbstractChannel):
 
         body_payload = amqpframe.ContentBodyPayload(message.body)
         self.send_ContentBodyFrame(body_payload)
-
+        if not immediate:
+            return self._fut
 
     def receive_BasicReturn(self, frame):
         raise NotImplementedError()
