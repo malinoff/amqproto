@@ -26,7 +26,7 @@ We'd like to hear about your propositions and suggestions.  Feel free to
 Report bugs
 -----------
 
-Report bugs for pytest in the `issue tracker <https://github.com/malinoff/amqproto/issues>`_.
+Report bugs for amqproto in the `issue tracker <https://github.com/malinoff/amqproto/issues>`_.
 
 If you are reporting a bug, please include:
 
