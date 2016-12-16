@@ -26,10 +26,13 @@ codestyle-deps:
 	$(PIP) install -r requirements/codestyle.txt
 
 integrationtests: tests-deps
-	$(PYTEST) -v -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/integration
+	which docker-compose >/dev/null 2>&1 && docker-compose up -d
+	sleep 10
+	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/integration
+	which docker-compose >/dev/null 2>&1 && docker-compose down
 
 unittests: tests-deps
-	$(PYTEST) -v -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/unit
+	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/unit
 
 tests-deps:
 	$(PIP) install -r requirements/test.txt
