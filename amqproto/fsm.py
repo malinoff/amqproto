@@ -27,7 +27,7 @@ class Connection:
           source='disconnected',
           dest='sent_ProtocolHeaderFrame'),
 
-        T(event='received_ProtocolHeaderFrame',
+        T(event='receive_ProtocolHeaderFrame',
           source='sent_ProtocolHeaderFrame',
           dest='disconnected'),
 
@@ -113,7 +113,7 @@ class Exchange:
           source='channel_idle',
           dest='sent_ExchangeBind'),
 
-        T(event='received_ExchangeBindOK',
+        T(event='receive_ExchangeBindOK',
           source='sent_ExchangeBind',
           dest='channel_idle'),
 
@@ -137,7 +137,7 @@ class Exchange:
           source='channel_idle',
           dest='sent_ExchangeDelete'),
 
-        T(event='received_ExchangeDeleteOK',
+        T(event='receive_ExchangeDeleteOK',
           source='sent_ExchangeDelete',
           dest='channel_idle'),
 
@@ -205,7 +205,7 @@ class Queue:
           source='channel_idle',
           dest='sent_QueueDelete'),
 
-        T(event='received_QueueDeleteOK',
+        T(event='receive_QueueDeleteOK',
           source='sent_QueueDelete',
           dest='channel_idle'),
 
@@ -338,7 +338,7 @@ class Tx:
           source='channel_idle_tx',
           dest='sent_TxCommit'),
 
-        T(event='received_TxCommitOK',
+        T(event='receive_TxCommitOK',
           source='sent_TxCommit',
           dest='channel_idle'),
 
@@ -347,7 +347,7 @@ class Tx:
           source='channel_idle_tx',
           dest='sent_TxRollback'),
 
-        T(event='received_TxRollbackOK',
+        T(event='receive_TxRollbackOK',
           source='sent_TxRollback',
           dest='channel_idle'),
     ]
@@ -365,7 +365,7 @@ class Confirm:
           source='channel_idle',
           dest='sent_ConfirmSelect'),
 
-        T(event='received_ConfirmSelectOK',
+        T(event='receive_ConfirmSelectOK',
           source='sent_ConfirmSelect',
           dest='channel_idle_confirm'),
 
@@ -491,6 +491,9 @@ class ChannelFraming:
           source='sent_ContentHeaderFrame',
           dest='channel_idle'),
 
+        T(event='send_MethodFrame',
+          source='sent_MethodFrame',
+          dest='sent_MethodFrame'),
     ]
 
 

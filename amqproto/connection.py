@@ -54,6 +54,7 @@ class Connection(AbstractChannel):
         super().__init__(channel_id=0)
 
         self._fsm = FunctionalMachine(
+            'connection_fsm',
             transitions=fsm.Connection.transitions,
             states=fsm.Connection.states,
             initial_state=fsm.Connection.initial_state

@@ -27,10 +27,12 @@ class Transition:
 class FunctionalMachine:
 
     def __init__(self,
+                 name,
                  transitions: typing.List[Transition],
                  states: typing.List[State],
                  initial_state: State):
         assert initial_state in states
+        self.name = name
         self._state = initial_state
         self._states = states
         self._transitions = defaultdict(list)
@@ -38,7 +40,7 @@ class FunctionalMachine:
             self._transitions[transition.event].append(transition)
 
     def trigger(self, event: Event):
-        assert event in self._transitions
+        assert event in self._transitions, event
         transitions = self._transitions[event]
         for transition in transitions:
             if transition.match_source(self.current_state):
@@ -46,7 +48,7 @@ class FunctionalMachine:
                 break
         else:
             raise RuntimeError("Can't trigger event {} from state {}".format(
-                event, self.current_state
+                event, self.current_state,
             ))
 
     @property

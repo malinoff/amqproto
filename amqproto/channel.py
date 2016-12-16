@@ -23,11 +23,13 @@ class Channel(AbstractChannel):
         super().__init__(channel_id)
 
         self._fsm = FunctionalMachine(
+            'channel_fsm',
             transitions=fsm.Channel.transitions,
             states=fsm.Channel.states,
             initial_state=fsm.Channel.initial_state,
         )
         self._framing_fsm = FunctionalMachine(
+            'framing_fsm',
             transitions=fsm.ChannelFraming.transitions,
             states=fsm.ChannelFraming.states,
             initial_state=fsm.ChannelFraming.initial_state,
@@ -287,14 +289,13 @@ class Channel(AbstractChannel):
         self._fut = Future()
 
     def send_QueueUnbind(self, queue, exchange='', routing_key='',
-                         no_wait=False, arguments=None):
+                         arguments=None):
         method = amqpframe.methods.QueueUnbind(
             queue=queue, exchange=exchange, routing_key=routing_key,
-            no_wait=no_wait, arguments=arguments,
+            arguments=arguments,
         )
         self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._fut
 
     def receive_QueueUnbindOK(self, frame):
         self._fut.set_result(frame.payload)
@@ -382,11 +383,13 @@ class Channel(AbstractChannel):
 
         body_payload = amqpframe.ContentBodyPayload(message.body)
         self.send_ContentBodyFrame(body_payload)
-        if not immediate:
+        if immediate:
             return self._fut
 
     def receive_BasicReturn(self, frame):
-        raise NotImplementedError()
+        logger.debug(frame)
+        self._fut.set_result(frame.payload)
+        self._fut = Future()
 
     def receive_BasicDeliver(self, frame):
         self._message = amqpframe.basic.Message(delivery_info=frame.payload)
@@ -405,10 +408,12 @@ class Channel(AbstractChannel):
         self._message = amqpframe.basic.Message(delivery_info=frame.payload)
         self._message_fut = Future()
         self._fut.set_result(self._message_fut)
+        self._fut = Future()
 
     def receive_BasicGetEmpty(self, frame):
         self._message_fut = Future()
         self._fut.set_result(self._message_fut)
+        self._fut = Future()
 
     def send_BasicAck(self, delivery_tag='', multiple=False):
         method = amqpframe.methods.BasicAck(
