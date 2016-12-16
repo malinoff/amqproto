@@ -18,17 +18,14 @@ This leaves users free to use any I/O approach they see fit
 Unlike other existing sans-io_ libraries, amqproto comes with a built-in set
 of adapters for various networking libraries:
 
-===========  ============================
+===========  =============================
 I/O library  Adapter
-===========  ============================
-asyncio_     `amqproto.adapters.asyncio`_
-===========  ============================
+===========  =============================
+asyncio_     ``amqproto.adapters.asyncio``
 curio_       **Not supported yet**
-===========  ============================
 Twisted_     **Not supported yet**
-===========  ============================
 socket_      **Not supported yet**
-===========  ============================
+===========  =============================
 
 Feel free to make a pull request adding your own I/O layer of preference.
 
