@@ -1,4 +1,5 @@
 import io
+import time
 import logging
 import platform
 import itertools
@@ -13,8 +14,8 @@ from fsmpy import FunctionalMachine
 
 from . import fsm
 from . import channel
+from . import exceptions
 from . import auth as _auth_methods
-from .abstract_channel import AbstractChannel
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ DEFAULT_CLIENT_PROPERTIES = {
 }
 
 
-class Connection(AbstractChannel):
+class Connection:
 
     def __init__(self,
                  virtual_host='/',
@@ -50,8 +51,11 @@ class Connection(AbstractChannel):
                  frame_max=0,
                  # Heartbeat delay in seconds, 0 means no heartbeats.
                  heartbeat=60):
-
-        super().__init__(channel_id=0)
+        self._channel_id = 0
+        self._buffer = io.BytesIO()
+        # Future used to synchronise Do/DoOK methods
+        self._fut = Future()
+        self._method_handlers = self._setup_method_handlers()
 
         self._fsm = FunctionalMachine(
             'connection_fsm',
@@ -60,11 +64,9 @@ class Connection(AbstractChannel):
             initial_state=fsm.Connection.initial_state
         )
 
-        self._channel_factory = None
-        self._channels = {}
+        self._channels_manager = None
 
         self._virtual_host = virtual_host
-        # Will be ajusted in receive_vaild_protocol_header
         self._protocol_major = protocol_major
         self._protocol_minor = protocol_minor
         self._protocol_revision = protocol_revision
@@ -88,7 +90,7 @@ class Connection(AbstractChannel):
                 'mechanisms': None,
             },
             'chosen': {'locale': None, 'mechanism': None},
-            'secure': {'response': None},
+            'secure': {'challenge': None, 'response': None},
         }
 
         self._tune_properties = {
@@ -107,11 +109,14 @@ class Connection(AbstractChannel):
         self.properties = {
             # Irrelevant until receive_ConnectionTune is called
             'channel_max': None,
-            'heartbeat': None,
             # Before max frame size is negotiated, FRAME_MIN_SIZE
             # is max frame size (yeah).
             'frame_max': FRAME_MIN_SIZE,
+            'heartbeat': None,
         }
+
+        self._heartbeater = Heartbeater(self)
+        self.alive = False
 
     def _setup_method_handlers(self):
         methods = amqpframe.methods
@@ -124,42 +129,91 @@ class Connection(AbstractChannel):
             methods.ConnectionCloseOK: self.receive_ConnectionCloseOK,
         }
 
-    def _send_method(self, method):
-        self._fsm.trigger('send_' + method.__class__.__name__)
-        frame = amqpframe.MethodFrame(self._channel_id, method)
-        frame.to_bytestream(self._buffer)
+    def data_to_send(self):
+        data = self._buffer.getvalue()
+        if self._channels_manager is not None:
+            for channel in self._channels_manager.values():
+                data += channel.data_to_send()
+        self._buffer = io.BytesIO()
+        return data
+
+    def receive_frames(self, data):
+        if data:
+            # Any received octet counts as Heartbeat frame
+            self._heartbeater.update_received_time()
+        stream = io.BytesIO(data)
+        build_frame = amqpframe.Frame.from_bytestream
+        while stream.tell() != len(data):
+            frame = build_frame(stream)
+            # Check if frame size fits into the negotiated value.
+            if stream.tell() > self.properties['frame_max']:
+                raise exceptions.UnrecoverableError(
+                    'received frame is too large ({})'.format(stream.tell())
+                )
+            yield frame
 
     def handle_frame(self, frame):
         channel_id = frame.channel_id
         if channel_id != 0:
-            channel = self._channels[channel_id]
+            channel = self._channels_manager[channel_id]
             channel.handle_frame(frame)
             self._buffer.write(channel.data_to_send())
             return
 
         if isinstance(frame, amqpframe.MethodFrame):
+            logger.debug(
+                'Receiving MethodFrame %s [channel_id:%s]',
+                frame.payload.__class__.__name__, self._channel_id
+            )
             self.handle_MethodFrame(frame)
         elif isinstance(frame, amqpframe.ProtocolHeaderFrame):
-            self.receive_ProtocolHeaderFrame(frame)
-        elif isinstance(frame, amqpframe.HeartbeatFrame):
-            pass
+            logger.debug(
+                'Receiving ProtocolHeaderFrame [channel_id:%s]',
+                self._channel_id
+            )
+            self.handle_ProtocolHeaderFrame(frame)
+        elif isinstance(frame, amqpframe.HeartbeatFrame):  # pragma: no cover
+            logger.debug(
+                'Receiving HeartbeatFrame [channel_id:%s]',
+                self._channel_id
+            )
+
+    def check_heartbeats(self):
+        return self._heartbeater.check()
+
+    def send_heartbeat(self):
+        self._heartbeater.send()
+
+    def handle_MethodFrame(self, frame):
+        self._fsm.trigger('receive_' + frame.payload.__class__.__name__)
+        method = frame.payload
+        handler = self._method_handlers[method.__class__]
+        handler(frame)
+
+    def _send_method(self, method):
+        logger.debug(
+            'Sending %s [channel_id:%s]',
+            method.__class__.__name__, self._channel_id
+        )
+        self._heartbeater.update_sent_time()
+        self._fsm.trigger('send_' + method.__class__.__name__)
+        frame = amqpframe.MethodFrame(self._channel_id, method)
+        frame.to_bytestream(self._buffer)
 
     def initiate_connection(self):
         self.send_ProtocolHeaderFrame()
         return self._fut
 
-    def get_channel(self):
-        channel = self._channel_factory(self.properties['frame_max'])
-        self._channels[channel._channel_id] = channel
-        return channel
+    def get_channel(self, channel_id=None):
+        return self._channels_manager[channel_id]
 
-    def handle_MethodFrame(self, frame):
-        self._fsm.trigger('receive_' + frame.payload.__class__.__name__)
-        super().handle_MethodFrame(frame)
+    def send_HeartbeatFrame(self):
+        payload = amqpframe.HeartbeatPayload()
+        frame = amqpframe.HeartbeatFrame(self._channel_id, payload)
+        frame.to_bytestream(self._buffer)
 
     # Handshake
     def send_ProtocolHeaderFrame(self):
-        logger.debug('Sending ProtocolHeaderFrame')
         self._fsm.trigger('send_ProtocolHeaderFrame')
         payload = amqpframe.ProtocolHeaderPayload(
             self._protocol_major,
@@ -177,25 +231,43 @@ class Connection(AbstractChannel):
         in the protocol header, it MUST respond with a valid protocol header
         and then close the socket connection.
         """
-        logger.debug('Receiving ProtocolHeaderFrame')
         self._fsm.trigger('receive_ProtocolHeaderFrame')
-        self._protocol_major = frame.payload.protocol_major
-        self._protocol_minor = frame.payload.protocol_minor
-        self._protocol_revision = frame.payload.protocol_revision
+        raise exceptions.UnsupportedProtocol(
+            frame.payload.protocol_major,
+            frame.payload.protocol_minor,
+            frame.payload.protocol_revision,
+        )
 
     def receive_ConnectionStart(self, frame):
-        logger.debug('Receiving ConnectionStart')
 
         method = frame.payload
-        assert method.version_major == self._protocol_major
-        assert method.version_minor == self._protocol_minor
-        assert method.mechanisms
-        assert b'en_US' in method.locales
+        if method.version_major != self._protocol_major:
+            raise exceptions.UnrecoverableError(
+                'protocol major version mismatch (expected {}, got {})'.format(
+                    self._protocol_major, method.version_major
+                )
+            )
+        if method.version_minor != self._protocol_minor:
+            raise exceptions.UnrecoverableError(
+                'protocol minor version mismatch (expected {}, got {})'.format(
+                    self._protocol_minor, method.version_minor
+                )
+            )
+        if not method.mechanisms:
+            raise exceptions.UnrecoverableError(
+                'server did not sent any auth mechanisms'
+            )
+        if b'en_US' not in method.locales:
+            raise exceptions.UnrecoverableError(
+                "server did not sent b'en_US' locale, got {}".format(
+                    method.locales
+                )
+            )
 
         self._handshake_properties['server'] = {
             'properties': method.server_properties,
-            'mechanisms': method.mechanisms,
-            'locales': method.locales,
+            'mechanisms': method.mechanisms.split(b' '),
+            'locales': method.locales.split(b' '),
         }
         # Fail-fast approach: choose mechanism and locale as soon as possible
         chosen = self._choose_handshake_properties(
@@ -208,13 +280,16 @@ class Connection(AbstractChannel):
 
     def _choose_handshake_properties(self, client, server):
         if client['mechanism'] not in server['mechanisms']:
-            raise RuntimeError('Unable to agree on auth mechanism')
+            raise exceptions.UnrecoverableError(
+                'unable to agree on auth mechanism'
+            )
         if client['locale'] not in server['locales']:
-            raise RuntimeError('Unable to agree on locale')
+            raise exceptions.UnrecoverableError(
+                'unable to agree on locale'
+            )
         return {'mechanism': client['mechanism'], 'locale': client['locale']}
 
     def send_ConnectionStartOK(self):
-        logger.debug('Sending ConnectionStartOK')
         stream = io.BytesIO()
         self._auth.to_bytestream(stream)
         response = stream.getvalue()
@@ -232,58 +307,64 @@ class Connection(AbstractChannel):
         self._send_method(method)
 
     def receive_ConnectionSecure(self, frame):
-        logger.debug('Receiving ConnectionSecure')
         method = frame.payload
         # Fail-fast
         response = self._auth.handle_challenge(method.challenge)
-        if response is None:
-            response = b''
+        self._handshake_properties['secure']['challenge'] = method.challenge
         self._handshake_properties['secure']['response'] = response
 
         self.send_ConnectionSecureOK()
 
     def send_ConnectionSecureOK(self):
-        logger.debug('Sending ConnectionSecureOK')
         method = amqpframe.methods.ConnectionSecureOK(
             response=self._handshake_properties['secure']['response']
         )
-        self._handshake_properties['secure']['response'] = None
         self._send_method(method)
 
     def receive_ConnectionTune(self, frame):
-        logger.debug('Receiving ConnectionTune')
+        client_props = self._tune_properties['client']
+        server_props = self._tune_properties['server']
+
         method = frame.payload
-        for item in ('channel_max', 'frame_max', 'heartbeat'):
-            client_value = self._tune_properties['client'][item]
-            server_value = getattr(method, item)
-            self._tune_properties['server'][item] = server_value
+        for idx, item in enumerate(('channel_max', 'frame_max')):
+            client_value = client_props[item]
+            server_props[item] = server_value = getattr(method, item)
 
             if client_value == 0 or server_value == 0:
-                self.properties[item] = max(client_value, server_value)
+                negotiated = max(client_value, server_value)
             else:
-                self.properties[item] = min(client_value, server_value)
+                negotiated = min(client_value, server_value)
+            if negotiated == 0:
+                type_ = method.field_info[idx][1]
+                negotiated = type_.MAX
+            self.properties[item] = negotiated
 
-        self._channel_factory = channel.channel_factory(
-            channel_max=self.properties['channel_max']
+        client_value = client_props['heartbeat']
+        server_props['heartbeat'] = server_value = method.heartbeat
+        if client_value == 0 or server_value == 0:
+            self.properties['heartbeat'] = 0
+        else:
+            self.properties['heartbeat'] = max(client_value, server_value)
+
+        self._channels_manager = channel.ChannelsManager(
+            self.properties['channel_max']
         )
         self.send_ConnectionTuneOK()
 
     def send_ConnectionTuneOK(self):
-        logger.debug('Sending ConnectionTuneOK')
         method = amqpframe.methods.ConnectionTuneOK(**self.properties)
         self._send_method(method)
 
         self.send_ConnectionOpen()
 
     def send_ConnectionOpen(self):
-        logger.debug('Sending ConnectionOpen')
         method = amqpframe.methods.ConnectionOpen(
             virtual_host=self._virtual_host
         )
         self._send_method(method)
 
     def receive_ConnectionOpenOK(self, frame):
-        logger.debug('Receiving ConnectionOpenOK')
+        self.alive = True
         self._fut.set_result(frame.payload)
         self._fut = Future()
 
@@ -298,19 +379,58 @@ class Connection(AbstractChannel):
         return self._fut
 
     def receive_ConnectionCloseOK(self, frame):
+        self.alive = False
         self._fut.set_result(frame.payload)
         self._fut = Future()
 
     def receive_ConnectionClose(self, frame):
         method = frame.payload
-        logger.error({'event': 'ConnectionClose',
-                      'reply_code': method.reply_code,
-                      'reply_text': method.reply_text,
-                      'class_id': method.class_id,
-                      'method_id': method.method_id})
-        self.send_ConnectionCloseOK()
-        return self._fut
+        exc = exceptions.ConnectionClosed(
+            method.reply_code,
+            method.reply_text,
+            method.class_id,
+            method.method_id,
+        )
+        self.send_ConnectionCloseOK(exc)
 
-    def send_ConnectionCloseOK(self):
+    def send_ConnectionCloseOK(self, _exc):
+        self.alive = False
         method = amqpframe.methods.ConnectionCloseOK()
         self._send_method(method)
+        raise _exc
+
+
+class Heartbeater:
+
+    def __init__(self, connection):
+        self.connection = connection
+
+        self._previous_heartbeat_received = 0
+        self._previous_heartbeat_sent = 0
+
+    @property
+    def interval(self):
+        return self.connection.properties['heartbeat']
+
+    def check(self):
+        elapsed = time.monotonic() - self._previous_heartbeat_received
+        if elapsed >= 2 * self.interval:
+            raise exceptions.UnrecoverableError(
+                'missed two or more heartbeats'
+            )
+        return True
+
+    def update_received_time(self):
+        self._previous_heartbeat_received = time.monotonic()
+
+    def update_sent_time(self):
+        self._previous_heartbeat_sent = time.monotonic()
+
+    def send(self):
+        elapsed = time.monotonic() - self._previous_heartbeat_sent
+        # / 2 is there so that we don't end up waiting for nearly
+        # 2 * self.interval before sending a heartbeat in the boundary case
+        # where the last message was sent just after a heartbeat.
+        if elapsed >= self.interval / 2:
+            self.connection.send_HeartbeatFrame()
+        self.update_sent_time()

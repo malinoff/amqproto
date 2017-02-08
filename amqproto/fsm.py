@@ -194,7 +194,7 @@ class Queue:
           dest='sent_QueuePurge'),
 
         T(event='receive_QueuePurgeOK',
-          source='sent_QueuePurged',
+          source='sent_QueuePurge',
           dest='channel_idle'),
 
         T(event='send_QueuePurge_nowait',
@@ -507,7 +507,9 @@ class Channel:
                'channel_idle_confirm',
                'sent_ChannelOpen',
                'sent_ChannelClose',
-               'received_ChannelClose'] +
+               'received_ChannelClose',
+               'sent_ChannelFlow',
+               'received_ChannelFlow'] +
               Exchange.states +
               Queue.states +
               Basic.states +
@@ -550,6 +552,22 @@ class Channel:
         T(event='send_ChannelCloseOK',
           source='received_ChannelClose',
           dest='channel_disconnected'),
+
+        T(event='send_ChannelFlow',
+          source='channel_idle',
+          dest='sent_ChannelFlow'),
+
+        T(event='receive_ChannelFlowOK',
+          source='sent_ChannelFlow',
+          dest='channel_idle'),
+
+        T(event='receive_ChannelFlow',
+          source='channel_idle',
+          dest='received_ChannelFlow'),
+
+        T(event='send_ChannelFlowOK',
+          source='received_ChannelFlow',
+          dest='channel_idle'),
         ] + Exchange.transitions +
                    Queue.transitions +
                    Basic.transitions +
