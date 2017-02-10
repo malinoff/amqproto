@@ -123,7 +123,7 @@ async def test_can_bind_queue_to_exchange(exchange):
 
 
 @pytest.mark.asyncio(forbid_global_loop=True)
-async def test_can_recieve_message(event_loop, exchange):
+async def test_can_receive_message(exchange):
     # setup
     queue_name = 'amqproto_test_q'
     queue = Queue(exchange._channel, queue_name)
@@ -137,3 +137,81 @@ async def test_can_recieve_message(event_loop, exchange):
     assert message.body == body
 
     await queue.unbind(exchange)
+    await queue.delete()
+
+
+@pytest.mark.asyncio(forbid_global_loop=True)
+async def test_mandatory_flag_raises_when_not_delivered(channel):
+    # setup
+    exchange = Exchange(channel, 'amq.direct')
+
+    with pytest.raises(NotImplementedError):
+        # ToDo: This should raise an UnroutableMessageException
+        await exchange.publish(Message(b'some message'),
+                               routing_key='foobar',  # this queue doesnt exist
+                               mandatory=True)
+
+
+@pytest.mark.asyncio(forbid_global_loop=True)
+async def test_mandatory_flag_on_existing_queue(channel):
+    # setup
+    queue = Queue(channel, 'amqproto_test_q')
+    exchange = Exchange(channel, 'amq.direct')
+    await queue.declare()
+    await queue.bind(exchange)
+
+    # should not throw an exception
+    await exchange.publish(Message(b'some message'),
+                           routing_key='amqproto_test_q',
+                           mandatory=True)
+
+    # cleanup
+    await queue.unbind(exchange)
+    await queue.delete()
+
+
+@pytest.mark.asyncio(forbid_global_loop=True)
+async def test_topic_exchange_flow(channel):
+    exchange = Exchange(channel, 'myexchange')
+    queue = Queue(channel, 'amqproto_test_q')
+    await Exchange.declare(type='topic')
+    await queue.declare()
+    await queue.bind(exchange, routing_key='my.routing.key')
+
+    await exchange.publish(Message(b'Some Message'),
+                           routing_key='my.routing.key')
+
+    message = asyncio.wait_for(queue.get(), 4)
+    assert message
+
+    # cleanup
+    await queue.unbind(exchange)
+    await queue.delete()
+    await exchange.delete()
+
+
+@pytest.mark.asyncio(forbid_global_loop=True)
+async def test_fanout_exchange_flow(channel):
+    exchange = Exchange(channel, 'myexchange')
+    queue1 = Queue(channel, 'amqproto_test_q')
+    queue2 = Queue(channel, 'amqproto_test_q2')
+    await Exchange.declare(type='fanout')
+    await queue1.declare()
+    await queue2.declare()
+    await queue1.bind(exchange)
+    await queue2.bind(exchange)
+
+    await exchange.publish(Message(b'Some Message'),
+                           routing_key='whatever')
+
+    message1 = asyncio.wait_for(queue1.get(), 4)
+    message2 = asyncio.wait_for(queue2.get(), 4)
+    # they should both get the message
+    assert message1 == message2
+
+    # cleanup
+    await queue1.unbind(exchange)
+    await queue2.unbind(exchange)
+    await queue1.delete()
+    await queue2.delete()
+    await exchange.delete()
