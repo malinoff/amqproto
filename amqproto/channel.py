@@ -1,7 +1,5 @@
 import io
 import logging
-import functools
-import itertools
 import collections
 import collections.abc
 from concurrent.futures import Future
@@ -20,8 +18,10 @@ logger = logging.getLogger(__name__)
 
 class Channel:
 
-    def __init__(self, channel_id):
+    def __init__(self, channel_id, frame_max):
         self._channel_id = channel_id
+        self._frame_max = frame_max
+
         self._buffer = io.BytesIO()
         # Future used to synchronise Do/DoOK methods
         self._fut = Future()
@@ -47,6 +47,7 @@ class Channel:
         self._message = None
         self._message_fut = None
 
+        self._consumer_tags = set()
         # Consumer callback
         self._on_message_received = None
 
@@ -183,7 +184,8 @@ class Channel:
         self._fut.set_result(None)
         self._fut = Future()
 
-    def send_ChannelClose(self, reply_code, reply_text, class_id=0, method_id=0):
+    def send_ChannelClose(self, reply_code, reply_text,
+                          class_id=0, method_id=0):
         method = amqpframe.methods.ChannelClose(
             reply_code=reply_code, reply_text=reply_text,
             class_id=class_id, method_id=method_id,
@@ -308,7 +310,7 @@ class Channel:
         self._fut = Future()
 
     def send_QueueBind(self, queue, exchange='', routing_key='',
-                   no_wait=False, arguments=None):
+                       no_wait=False, arguments=None):
         method = amqpframe.methods.QueueBind(
             queue=queue, exchange=exchange, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
@@ -414,25 +416,19 @@ class Channel:
         )
         self.send_ContentHeaderFrame(header_payload)
 
-        body_payload = amqpframe.ContentBodyPayload(message.body)
-        self.send_ContentBodyFrame(body_payload)
-        if immediate:
-            return self._fut
+        max_payload_size = self._frame_max - amqpframe.Frame.METADATA_SIZE
+        for chunk in chunked(message.body, max_payload_size):
+            body_payload = amqpframe.ContentBodyPayload(chunk)
+            self.send_ContentBodyFrame(body_payload)
 
     def receive_BasicReturn(self, frame):
-        logger.debug(frame)
-        self._fut.set_result(frame.payload)
-        self._fut = Future()
+        # TODO
+        pass
 
     def receive_BasicDeliver(self, frame):
         self._message = amqpframe.basic.Message(delivery_info=frame.payload)
 
-    # API is like this:
-    # messages = []
-    # chan.basic_get('foo').add_done_callback(
-    #     lambda fut: fut.add_done_callback(lambda msg: messages.append(msg))
-    # )
-    def send_BasicGet(self, queue='', no_ack=False):
+    def send_BasicGet(self, queue, no_ack=False):
         method = amqpframe.methods.BasicGet(queue=queue, no_ack=no_ack)
         self._send_method(method)
         return self._fut
@@ -451,8 +447,8 @@ class Channel:
         self._fut = Future()
 
     def receive_BasicGetEmpty(self, frame):
-        self._message_fut = Future()
-        self._fut.set_result(self._message_fut)
+        exc = exceptions.BasicGetEmpty()
+        self._fut.set_exception(exc)
         self._fut = Future()
 
     def send_BasicAck(self, delivery_tag='', multiple=False):
@@ -530,8 +526,9 @@ class Channel:
 
 class ChannelsManager(collections.abc.Mapping):
 
-    def __init__(self, channel_max):
+    def __init__(self, channel_max, frame_max):
         self.channel_max = channel_max
+        self.frame_max = frame_max
         self._next_channel_id = 1
         self._channels = {}
 
@@ -544,12 +541,12 @@ class ChannelsManager(collections.abc.Mapping):
                     "is reached".format(self.channel_max)
                 )
             self._next_channel_id += 1
-            channel = Channel(channel_id)
+            channel = Channel(channel_id, self.frame_max)
             self._channels[channel_id] = channel
         else:
             channel = self._channels.get(channel_id, None)
             if channel is None:
-                channel = Channel(channel_id)
+                channel = Channel(channel_id, self.frame_max)
                 self._channels[channel_id] = channel
         return channel
 
@@ -558,3 +555,8 @@ class ChannelsManager(collections.abc.Mapping):
 
     def __len__(self):
         return len(self._channels)
+
+
+def chunked(source, size):
+    for i in range(0, len(source), size):
+        yield source[i:i+size]

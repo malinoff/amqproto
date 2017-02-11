@@ -347,7 +347,7 @@ class Connection:
             self.properties['heartbeat'] = max(client_value, server_value)
 
         self._channels_manager = channel.ChannelsManager(
-            self.properties['channel_max']
+            self.properties['channel_max'], self.properties['frame_max']
         )
         self.send_ConnectionTuneOK()
 

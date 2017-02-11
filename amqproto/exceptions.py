@@ -33,3 +33,7 @@ class ChannelClosed(RecoverableError):
         self.reply_text = reply_text
         self.class_id = class_id
         self.method_id = method_id
+
+
+class BasicGetEmpty(RecoverableError):
+    pass
