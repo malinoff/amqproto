@@ -1,7 +1,12 @@
 import io
 
+import pytest
+
 import amqpframe
+import amqpframe.basic
 import amqpframe.methods
+
+import amqproto.exceptions
 
 from .strategies import draw_method_example
 
@@ -20,3 +25,164 @@ def test_BasicQos(ready_channel):
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
+
+
+def test_BasicPublish(ready_channel):
+    # We build a relatively large message - to exceed frame_max a bit
+    body = b'hello, world' * 100
+    message = amqpframe.basic.Message(body)
+    ready_channel.send_BasicPublish(message)
+
+    data_to_send = ready_channel.data_to_send()
+
+    stream = io.BytesIO()
+    method = amqpframe.methods.BasicPublish(
+        exchange='', routing_key='', mandatory=False, immediate=False,
+    )
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    frame.to_bytestream(stream)
+
+    payload = amqpframe.ContentHeaderPayload(
+        class_id=method.method_type[0],
+        body_size=message.body_size,
+        properties=message.properties,
+    )
+    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    frame.to_bytestream(stream)
+
+    max_payload_size = ready_channel._frame_max - amqpframe.Frame.METADATA_SIZE
+
+    chunk = body[:max_payload_size]
+    payload = amqpframe.ContentBodyPayload(chunk)
+    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    frame.to_bytestream(stream)
+
+    chunk = body[max_payload_size:]
+    payload = amqpframe.ContentBodyPayload(chunk)
+    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    frame.to_bytestream(stream)
+
+    assert stream.getvalue() in data_to_send
+
+
+def test_BasicGet_OK(ready_channel):
+    fut = ready_channel.send_BasicGet('myqueue')
+
+    delivery_info = {
+        'delivery_tag': 125,
+        'redelivered': False,
+        'exchange': b'myexchange',
+        'routing_key': b'myroutingkey',
+        'message_count': 10,
+    }
+    method = amqpframe.methods.BasicGetOK(**delivery_info)
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+    assert fut.done() and not fut.cancelled()
+
+    message_fut = fut.result()
+
+    body = b'hello, world' * 100
+    message = amqpframe.basic.Message(body)
+
+    payload = amqpframe.ContentHeaderPayload(
+        class_id=method.method_type[0],
+        body_size=message.body_size,
+        properties=message.properties,
+    )
+    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+    assert not message_fut.done()
+
+    max_payload_size = ready_channel._frame_max - amqpframe.Frame.METADATA_SIZE
+
+    chunk = body[:max_payload_size]
+    payload = amqpframe.ContentBodyPayload(chunk)
+    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+    assert not message_fut.done()
+
+    chunk = body[max_payload_size:]
+    payload = amqpframe.ContentBodyPayload(chunk)
+    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+    assert message_fut.done() and not message_fut.cancelled()
+
+    received_message = message_fut.result()
+
+    assert received_message.body == message.body
+    assert received_message.properties == message.properties
+
+    for key in ('delivery_tag', 'redelivered', 'exchange', 'routing_key',
+                'message_count'):
+        assert received_message.delivery_info[key] == delivery_info[key]
+
+
+def test_BasicGet_Empty(ready_channel):
+    fut = ready_channel.send_BasicGet('myqueue')
+
+    method = amqpframe.methods.BasicGetEmpty()
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+
+    assert fut.done() and not fut.cancelled()
+    with pytest.raises(amqproto.exceptions.BasicGetEmpty):
+        fut.result()
+
+
+def test_BasicConsume(ready_channel):
+    messages = []
+
+    def receive_message(message):
+        messages.append(message)
+
+    fut = ready_channel.send_BasicConsume(receive_message)
+
+    method = amqpframe.methods.BasicConsumeOK(consumer_tag=b'foo')
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+
+    assert fut.done() and not fut.cancelled()
+    assert fut.result() == b'foo'
+
+    delivery_info = {
+        'consumer_tag': b'foo',
+        'delivery_tag': 125,
+        'redelivered': False,
+        'exchange': b'myexchange',
+        'routing_key': b'myroutingkey',
+    }
+    method = amqpframe.methods.BasicDeliver(**delivery_info)
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+
+    body = b'hello, world'
+    message = amqpframe.basic.Message(body)
+
+    payload = amqpframe.ContentHeaderPayload(
+        class_id=method.method_type[0],
+        body_size=message.body_size,
+        properties=message.properties,
+    )
+    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+    assert not messages
+
+    payload = amqpframe.ContentBodyPayload(body)
+    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+    assert len(messages) == 1
+    assert messages[0].body == body
+
+    fut = ready_channel.send_BasicCancel(b'foo')
+
+    method = amqpframe.methods.BasicCancelOK(consumer_tag=b'foo')
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+
+    assert fut.done() and not fut.cancelled()
+
+    method = amqpframe.methods.BasicDeliver(**delivery_info)
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+    pytest.fail('Should fail, because consumer is cancelled')

@@ -1,3 +1,4 @@
+import io
 import pytest
 
 import amqpframe
@@ -58,6 +59,36 @@ def ready_channel(ready_connection):
     return channel
 
 
+@pytest.fixture
+def tx_channel(ready_channel):
+    fut = ready_channel.send_TxSelect()
+
+    method_bytes = io.BytesIO()
+    method = amqpframe.methods.TxSelect()
+    method.to_bytestream(method_bytes)
+    ready_channel.data_to_send()
+
+    method = amqpframe.methods.TxSelectOK()
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+    return ready_channel
+
+
+@pytest.fixture
+def confirm_channel(ready_channel):
+    fut = ready_channel.send_ConfirmSelect()
+
+    method_bytes = io.BytesIO()
+    method = amqpframe.methods.ConfirmSelect()
+    method.to_bytestream(method_bytes)
+    ready_channel.data_to_send()
+
+    method = amqpframe.methods.ConfirmSelectOK()
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+    return ready_channel
+
+
 # Taken from https://github.com/untitaker/pytest-subtesthack
 # Reasoning: https://github.com/pytest-dev/pytest/issues/916
 import pytest
@@ -67,6 +98,7 @@ from _pytest.python import Function
 @pytest.fixture
 def subtest(request):
     parent_test = request.node
+
     def inner(func):
         item = Function(
             name=request.function.__name__ + '[]',
