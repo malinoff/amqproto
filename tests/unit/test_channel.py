@@ -6,6 +6,7 @@ import amqpframe
 import amqpframe.methods
 
 import amqproto
+import amqproto.errors
 
 from .strategies import draw_method_example
 
@@ -31,7 +32,7 @@ def test_incorrect_channel_opening(ready_connection):
         channel = ready_connection.get_channel()
         assert channel._channel_id == i + 1
 
-    with pytest.raises(amqproto.exceptions.UnrecoverableError):
+    with pytest.raises(amqproto.errors.HardError):
         ready_connection.get_channel()
 
 
@@ -55,7 +56,7 @@ def test_correct_ChannelClose_handling(ready_channel):
     method, args = draw_method_example(amqpframe.methods.ChannelClose)
     frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
 
-    with pytest.raises(amqproto.exceptions.ChannelClosed) as excinfo:
+    with pytest.raises(amqproto.errors.AMQPError) as excinfo:
         ready_channel.handle_frame(frame)
 
     method_bytes = io.BytesIO()
@@ -70,6 +71,8 @@ def test_correct_ChannelClose_handling(ready_channel):
     assert exc.reply_text == args['reply_text']
     assert exc.class_id == args['class_id']
     assert exc.method_id == args['method_id']
+
+    assert isinstance(exc, amqproto.errors.ERRORS_BY_CODE[args['reply_code']])
 
 
 def test_ChannelFlow_sending(ready_channel):

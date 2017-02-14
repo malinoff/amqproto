@@ -5,7 +5,7 @@ import pytest
 import amqpframe
 import amqpframe.methods
 
-import amqproto.exceptions
+import amqproto.errors
 from amqproto.auth import Auth, PLAIN
 from amqproto.connection import Connection
 
@@ -17,7 +17,7 @@ def test_correct_connection_initiation():
         protocol_revision=56,
     )
     assert conn._channel_id == 0
-    fut = conn.initiate_connection()
+    conn.initiate_connection()
 
     frame_bytes = io.BytesIO()
     payload = amqpframe.ProtocolHeaderPayload(12, 34, 56)
@@ -29,23 +29,18 @@ def test_correct_connection_initiation():
 
 def test_incorrect_connection_initiation():
     conn = Connection()
-    fut = conn.initiate_connection()
+    conn.initiate_connection()
 
     payload = amqpframe.ProtocolHeaderPayload(1, 0, 0)
     frame = amqpframe.ProtocolHeaderFrame(conn._channel_id, payload)
 
-    with pytest.raises(amqproto.exceptions.UnsupportedProtocol) as excinfo:
+    with pytest.raises(amqproto.errors.HardError):
         conn.handle_frame(frame)
-
-    exc = excinfo.value
-    assert exc.protocol_major == 1
-    assert exc.protocol_minor == 0
-    assert exc.protocol_revision == 0
 
 
 def test_correct_ConnectionStart_handling():
     conn = Connection()
-    fut = conn.initiate_connection()
+    conn.initiate_connection()
 
     payload = amqpframe.methods.ConnectionStart(
         version_major=0,
@@ -91,42 +86,42 @@ def test_correct_ConnectionStart_handling():
 
 
 @pytest.mark.parametrize('arguments', [
-    { # Should fail because version_major is wrong
+    {  # Should fail because version_major is wrong
         'version_major': 1,
         'version_minor': 0,
         'server_properties': {},
         'mechanisms': b'',
         'locales': b'',
     },
-    { # Should fail because version_minor is wrong
+    {  # Should fail because version_minor is wrong
         'version_major': 0,
         'version_minor': 0,
         'server_properties': {},
         'mechanisms': b'',
         'locales': b'',
     },
-    { # Should fail because mechanisms is empty
+    {  # Should fail because mechanisms is empty
         'version_major': 0,
         'version_minor': 9,
         'server_properties': {},
         'mechanisms': b'',
         'locales': b'',
     },
-    { # Should fail because en_US is not in locales
+    {  # Should fail because en_US is not in locales
         'version_major': 0,
         'version_minor': 9,
         'server_properties': {},
         'mechanisms': b'PLAIN',
         'locales': b'',
     },
-    { # Should fail because there's no PLAIN mechanism
+    {  # Should fail because there's no PLAIN mechanism
         'version_major': 0,
         'version_minor': 9,
         'server_properties': {},
         'mechanisms': b'AMQPLAIN',
         'locales': b'en_US',
     },
-    { # Should fail because there's no ru_RU locale
+    {  # Should fail because there's no ru_RU locale
         'version_major': 0,
         'version_minor': 9,
         'server_properties': {},
@@ -136,12 +131,12 @@ def test_correct_ConnectionStart_handling():
 ])
 def test_incorrect_ConnectionStart_handling(arguments):
     conn = Connection(locale=b'ru_RU')
-    fut = conn.initiate_connection()
+    conn.initiate_connection()
 
     payload = amqpframe.methods.ConnectionStart(**arguments)
     frame = amqpframe.MethodFrame(conn._channel_id, payload)
 
-    with pytest.raises(amqproto.exceptions.UnrecoverableError):
+    with pytest.raises(amqproto.errors.HardError):
         conn.handle_frame(frame)
 
 
@@ -202,7 +197,7 @@ def test_incorrect_ConnectionStart_handling(arguments):
 ])
 def test_ConnectionTune_handling(properties):
     conn = Connection(**properties['client'])
-    fut = conn.initiate_connection()
+    conn.initiate_connection()
 
     payload = amqpframe.methods.ConnectionStart(
         version_major=0,
@@ -298,11 +293,11 @@ def test_correct_ConnectionClose_sending(ready_connection):
 
 def test_correct_ConnectionClose_handling(ready_connection):
     method = amqpframe.methods.ConnectionClose(
-        reply_code=15, reply_text=b'foo', class_id=100, method_id=200
+        reply_code=501, reply_text=b'foo', class_id=100, method_id=200
     )
     frame = amqpframe.MethodFrame(ready_connection._channel_id, method)
 
-    with pytest.raises(amqproto.exceptions.ConnectionClosed) as excinfo:
+    with pytest.raises(amqproto.errors.AMQPError) as excinfo:
         ready_connection.handle_frame(frame)
 
     method_bytes = io.BytesIO()
@@ -313,10 +308,12 @@ def test_correct_ConnectionClose_handling(ready_connection):
     assert not ready_connection.alive
 
     exc = excinfo.value
-    assert exc.reply_code == 15
+    assert exc.reply_code == 501
     assert exc.reply_text == b'foo'
     assert exc.class_id == 100
     assert exc.method_id == 200
+
+    assert isinstance(exc, amqproto.errors.ERRORS_BY_CODE[501])
 
 
 def test_can_receive_valid_frame(ready_connection):
@@ -346,7 +343,7 @@ def test_receive_frame_too_big(ready_connection):
     frame.to_bytestream(stream)
     data = stream.getvalue()
 
-    with pytest.raises(amqproto.exceptions.UnrecoverableError):
+    with pytest.raises(amqproto.errors.FrameError):
         list(ready_connection.receive_frames(data))
 
 
@@ -371,7 +368,7 @@ class CustomAuth(Auth):
 
 def test_ConnectionSecure_handling():
     conn = Connection(auth=CustomAuth(b'foo', b'bar'))
-    fut = conn.initiate_connection()
+    conn.initiate_connection()
 
     payload = amqpframe.methods.ConnectionStart(
         version_major=0,

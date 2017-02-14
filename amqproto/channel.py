@@ -11,7 +11,7 @@ import amqpframe.methods
 from fsmpy import FunctionalMachine
 
 from . import fsm
-from . import exceptions
+from . import errors
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +47,8 @@ class Channel:
         self._message = None
         self._message_fut = None
 
-        self._consumer_tags = set()
-        # Consumer callback
-        self._on_message_received = None
+        # consumer_tag -> message_future mapping
+        self._consumers = {}
 
         self.alive = False
         self.active = True
@@ -101,7 +100,9 @@ class Channel:
             'Sending %s [channel_id:%s]',
             method.__class__.__name__, self._channel_id
         )
-        if getattr(method, 'no_wait', False) or getattr(method, 'nowait', False):
+        no_wait = (getattr(method, 'no_wait', False) or
+                   getattr(method, 'nowait', False))
+        if no_wait:
             event = 'send_MethodFrame_nowait'
         elif getattr(method, 'content', False):
             event = 'send_MethodFrame_content'
@@ -172,7 +173,10 @@ class Channel:
             self._message_fut.set_result(message)
             self._message_fut = None
         else:
-            self._on_message_received(message)
+            consumer_tag = message.delivery_info.consumer_tag
+            message_fut = self._consumers[consumer_tag]
+            fut = self._consumers[consumer_tag] = Future()
+            message_fut.set_result((message, fut))
 
     def send_ChannelOpen(self):
         method = amqpframe.methods.ChannelOpen()
@@ -200,8 +204,8 @@ class Channel:
 
     def receive_ChannelClose(self, frame):
         method = frame.payload
-        exc = exceptions.ChannelClosed(
-            method.reply_code,
+        AMQPError = errors.ERRORS_BY_CODE[method.reply_code]
+        exc = AMQPError(
             method.reply_text,
             method.class_id,
             method.method_id,
@@ -372,21 +376,26 @@ class Channel:
         self._fut.set_result(None)
         self._fut = Future()
 
-    def send_BasicConsume(self, on_message_received, queue='', consumer_tag='',
+    def send_BasicConsume(self, queue='', consumer_tag='',
                           no_local=False, no_ack=False, exclusive=False,
                           no_wait=False, arguments=None):
-        self._on_message_received = on_message_received
         method = amqpframe.methods.BasicConsume(
             queue=queue, consumer_tag=consumer_tag, no_local=no_local,
             no_ack=no_ack, exclusive=exclusive, no_wait=no_wait,
             arguments=arguments,
         )
+
         self._send_method(method)
         if not no_wait:
             return self._fut
 
+        fut = self._consumers[method.consumer_tag] = Future()
+        return fut
+
     def receive_BasicConsumeOK(self, frame):
-        self._fut.set_result(frame.payload.consumer_tag)
+        consumer_tag = frame.payload.consumer_tag
+        fut = self._consumers[consumer_tag] = Future()
+        self._fut.set_result(fut)
         self._fut = Future()
 
     def send_BasicCancel(self, consumer_tag, no_wait=False):
@@ -396,9 +405,13 @@ class Channel:
         self._send_method(method)
         if not no_wait:
             return self._fut
+        else:
+            del self._consumers[method.consumer_tag]
 
     def receive_BasicCancelOK(self, frame):
-        self._fut.set_result(frame.payload.consumer_tag)
+        consumer_tag = frame.payload.consumer_tag
+        del self._consumers[consumer_tag]
+        self._fut.set_result(consumer_tag)
         self._fut = Future()
 
     def send_BasicPublish(self, message, exchange='', routing_key='',
@@ -417,15 +430,27 @@ class Channel:
         self.send_ContentHeaderFrame(header_payload)
 
         max_payload_size = self._frame_max - amqpframe.Frame.METADATA_SIZE
-        for chunk in chunked(message.body, max_payload_size):
+        for chunk in _chunked(message.body, max_payload_size):
             body_payload = amqpframe.ContentBodyPayload(chunk)
             self.send_ContentBodyFrame(body_payload)
 
     def receive_BasicReturn(self, frame):
-        # TODO
-        pass
+        # RabbitMQ does not support BasicPublish with immediate=True
+        # http://www.rabbitmq.com/blog/2012/11/19/breaking-things-with-rabbitmq-3-0/
+        # If you *really* *really* need to handle this case with an other
+        # broker, simply hook into the specific IO adapter
+        # and write this logic by yourself.
+        raise NotImplementedError
 
     def receive_BasicDeliver(self, frame):
+        consumer_tag = frame.payload.consumer_tag
+        if consumer_tag not in self._consumers:
+            class_id, method_id = frame.payload.method_type
+            raise errors.CommandInvalid(
+                'server has delivered a message to consumer with tag {}'
+                'but there is no such consumer'.format(consumer_tag),
+                class_id, method_id
+            )
         self._message = amqpframe.basic.Message(delivery_info=frame.payload)
 
     def send_BasicGet(self, queue, no_ack=False):
@@ -447,8 +472,7 @@ class Channel:
         self._fut = Future()
 
     def receive_BasicGetEmpty(self, frame):
-        exc = exceptions.BasicGetEmpty()
-        self._fut.set_exception(exc)
+        self._fut.set_result(None)
         self._fut = Future()
 
     def send_BasicAck(self, delivery_tag='', multiple=False):
@@ -536,7 +560,7 @@ class ChannelsManager(collections.abc.Mapping):
         if channel_id is None:
             channel_id = self._next_channel_id
             if channel_id > self.channel_max:
-                raise exceptions.UnrecoverableError(
+                raise errors.HardError(
                     "can't create a channel, channel_max ({}) "
                     "is reached".format(self.channel_max)
                 )
@@ -557,6 +581,6 @@ class ChannelsManager(collections.abc.Mapping):
         return len(self._channels)
 
 
-def chunked(source, size):
+def _chunked(source, size):
     for i in range(0, len(source), size):
         yield source[i:i+size]

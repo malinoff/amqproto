@@ -2,7 +2,6 @@ import io
 import time
 import logging
 import platform
-import itertools
 import pkg_resources
 from concurrent.futures import Future
 
@@ -13,8 +12,8 @@ from amqpframe.frames import FRAME_MIN_SIZE
 from fsmpy import FunctionalMachine
 
 from . import fsm
+from . import errors
 from . import channel
-from . import exceptions
 from . import auth as _auth_methods
 
 logger = logging.getLogger(__name__)
@@ -125,15 +124,15 @@ class Connection:
             methods.ConnectionSecure: self.receive_ConnectionSecure,
             methods.ConnectionTune: self.receive_ConnectionTune,
             methods.ConnectionOpenOK: self.receive_ConnectionOpenOK,
-            methods.ConnectionClose : self.receive_ConnectionClose,
+            methods.ConnectionClose: self.receive_ConnectionClose,
             methods.ConnectionCloseOK: self.receive_ConnectionCloseOK,
         }
 
     def data_to_send(self):
         data = self._buffer.getvalue()
         if self._channels_manager is not None:
-            for channel in self._channels_manager.values():
-                data += channel.data_to_send()
+            for chan in self._channels_manager.values():
+                data += chan.data_to_send()
         self._buffer = io.BytesIO()
         return data
 
@@ -143,13 +142,23 @@ class Connection:
             self._heartbeater.update_received_time()
         stream = io.BytesIO(data)
         build_frame = amqpframe.Frame.from_bytestream
-        while stream.tell() != len(data):
+        offset = 0
+        data_length = len(data)
+        while True:
+            if stream.tell() == data_length:
+                break
             frame = build_frame(stream)
             # Check if frame size fits into the negotiated value.
-            if stream.tell() > self.properties['frame_max']:
-                raise exceptions.UnrecoverableError(
-                    'received frame is too large ({})'.format(stream.tell())
+            if (stream.tell() - offset) > self.properties['frame_max']:
+                if isinstance(frame, amqpframe.MethodFrame):
+                    class_id, method_id = frame.payload.method_type
+                else:
+                    class_id, method_id = 0, 0
+                reply_text = 'received frame is too large ({} bytes)'.format(
+                    stream.tell()
                 )
+                raise errors.FrameError(reply_text, class_id, method_id)
+            offset += stream.tell()
             yield frame
 
     def handle_frame(self, frame):
@@ -232,37 +241,32 @@ class Connection:
         and then close the socket connection.
         """
         self._fsm.trigger('receive_ProtocolHeaderFrame')
-        raise exceptions.UnsupportedProtocol(
+        reply_text = 'unsupported protocol: {}.{}.{}'.format(
             frame.payload.protocol_major,
             frame.payload.protocol_minor,
             frame.payload.protocol_revision,
         )
+        raise errors.HardError(reply_text)
 
     def receive_ConnectionStart(self, frame):
-
         method = frame.payload
         if method.version_major != self._protocol_major:
-            raise exceptions.UnrecoverableError(
-                'protocol major version mismatch (expected {}, got {})'.format(
-                    self._protocol_major, method.version_major
-                )
+            reply_text = 'major version mismatch (expected {}, got {})'.format(
+                self._protocol_major, method.version_major
             )
+            raise errors.HardError(reply_text)
         if method.version_minor != self._protocol_minor:
-            raise exceptions.UnrecoverableError(
-                'protocol minor version mismatch (expected {}, got {})'.format(
-                    self._protocol_minor, method.version_minor
-                )
+            reply_text = 'minor version mismatch (expected {}, got {})'.format(
+                self._protocol_minor, method.version_minor
             )
+            raise errors.HardError(reply_text)
         if not method.mechanisms:
-            raise exceptions.UnrecoverableError(
-                'server did not sent any auth mechanisms'
-            )
+            raise errors.HardError('server did not sent any auth mechanisms')
         if b'en_US' not in method.locales:
-            raise exceptions.UnrecoverableError(
-                "server did not sent b'en_US' locale, got {}".format(
-                    method.locales
-                )
+            reply_text = "server did not sent b'en_US' locale, got {}".format(
+                method.locales
             )
+            raise errors.HardError(reply_text)
 
         self._handshake_properties['server'] = {
             'properties': method.server_properties,
@@ -280,13 +284,9 @@ class Connection:
 
     def _choose_handshake_properties(self, client, server):
         if client['mechanism'] not in server['mechanisms']:
-            raise exceptions.UnrecoverableError(
-                'unable to agree on auth mechanism'
-            )
+            raise errors.HardError('unable to agree on auth mechanism')
         if client['locale'] not in server['locales']:
-            raise exceptions.UnrecoverableError(
-                'unable to agree on locale'
-            )
+            raise errors.HardError('unable to agree on locale')
         return {'mechanism': client['mechanism'], 'locale': client['locale']}
 
     def send_ConnectionStartOK(self):
@@ -385,8 +385,8 @@ class Connection:
 
     def receive_ConnectionClose(self, frame):
         method = frame.payload
-        exc = exceptions.ConnectionClosed(
-            method.reply_code,
+        AMQPError = errors.ERRORS_BY_CODE[method.reply_code]
+        exc = AMQPError(
             method.reply_text,
             method.class_id,
             method.method_id,
@@ -415,9 +415,7 @@ class Heartbeater:
     def check(self):
         elapsed = time.monotonic() - self._previous_heartbeat_received
         if elapsed >= 2 * self.interval:
-            raise exceptions.UnrecoverableError(
-                'missed two or more heartbeats'
-            )
+            raise errors.HardError('missed two or more heartbeats')
         return True
 
     def update_received_time(self):

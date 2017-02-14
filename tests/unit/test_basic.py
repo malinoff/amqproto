@@ -1,12 +1,11 @@
 import io
+import concurrent.futures
 
 import pytest
 
 import amqpframe
 import amqpframe.basic
 import amqpframe.methods
-
-import amqproto.exceptions
 
 from .strategies import draw_method_example
 
@@ -126,24 +125,19 @@ def test_BasicGet_Empty(ready_channel):
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
-    with pytest.raises(amqproto.exceptions.BasicGetEmpty):
-        fut.result()
+    assert fut.result() is None
 
 
 def test_BasicConsume(ready_channel):
-    messages = []
-
-    def receive_message(message):
-        messages.append(message)
-
-    fut = ready_channel.send_BasicConsume(receive_message)
+    fut = ready_channel.send_BasicConsume()
 
     method = amqpframe.methods.BasicConsumeOK(consumer_tag=b'foo')
     frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
-    assert fut.result() == b'foo'
+    assert isinstance(fut.result(), concurrent.futures.Future)
+    fut = fut.result()
 
     delivery_info = {
         'consumer_tag': b'foo',
@@ -166,13 +160,14 @@ def test_BasicConsume(ready_channel):
     )
     frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
-    assert not messages
 
     payload = amqpframe.ContentBodyPayload(body)
     frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
-    assert len(messages) == 1
-    assert messages[0].body == body
+
+    msg, new_message_fut = fut.result()
+    assert msg.body == body
+    assert isinstance(new_message_fut, concurrent.futures.Future)
 
     fut = ready_channel.send_BasicCancel(b'foo')
 
@@ -184,5 +179,5 @@ def test_BasicConsume(ready_channel):
 
     method = amqpframe.methods.BasicDeliver(**delivery_info)
     frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
-    ready_channel.handle_frame(frame)
-    pytest.fail('Should fail, because consumer is cancelled')
+    with pytest.raises(amqpframe.errors.CommandInvalid):
+        ready_channel.handle_frame(frame)
