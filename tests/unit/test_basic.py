@@ -128,16 +128,18 @@ def test_BasicGet_Empty(ready_channel):
     assert fut.result() is None
 
 
-def test_BasicConsume(ready_channel):
-    fut = ready_channel.send_BasicConsume()
+@pytest.mark.parametrize('no_wait', [False, True])
+def test_BasicConsume(no_wait, ready_channel):
+    fut = ready_channel.send_BasicConsume(consumer_tag=b'foo', no_wait=no_wait)
 
-    method = amqpframe.methods.BasicConsumeOK(consumer_tag=b'foo')
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
-    ready_channel.handle_frame(frame)
+    if not no_wait:
+        method = amqpframe.methods.BasicConsumeOK(consumer_tag=b'foo')
+        frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+        ready_channel.handle_frame(frame)
 
-    assert fut.done() and not fut.cancelled()
-    assert isinstance(fut.result(), concurrent.futures.Future)
-    fut = fut.result()
+        assert fut.done() and not fut.cancelled()
+        assert isinstance(fut.result(), concurrent.futures.Future)
+        fut = fut.result()
 
     delivery_info = {
         'consumer_tag': b'foo',
@@ -169,13 +171,65 @@ def test_BasicConsume(ready_channel):
     assert msg.body == body
     assert isinstance(new_message_fut, concurrent.futures.Future)
 
-    fut = ready_channel.send_BasicCancel(b'foo')
-
-    method = amqpframe.methods.BasicCancelOK(consumer_tag=b'foo')
+    # Test a couple of edge cases: 0 body size message
+    method = amqpframe.methods.BasicDeliver(**delivery_info)
     frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
-    assert fut.done() and not fut.cancelled()
+    body = b''
+    message = amqpframe.basic.Message(body)
+
+    payload = amqpframe.ContentHeaderPayload(
+        class_id=method.method_type[0],
+        body_size=message.body_size,
+        properties=message.properties,
+    )
+    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+
+    msg, new_message_fut = new_message_fut.result()
+    assert msg.body == body
+    assert isinstance(new_message_fut, concurrent.futures.Future)
+
+    # and partial sending
+    method = amqpframe.methods.BasicDeliver(**delivery_info)
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+
+    body = b'hello, world'
+    message = amqpframe.basic.Message(body)
+
+    payload = amqpframe.ContentHeaderPayload(
+        class_id=method.method_type[0],
+        body_size=message.body_size,
+        properties=message.properties,
+    )
+    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+
+    payload = amqpframe.ContentBodyPayload(b'hello')
+    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    ready_channel.handle_frame(frame)
+
+    method = amqpframe.methods.ChannelFlow(active=True)
+    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    ready_channel.handle_frame(frame)
+
+    msg, new_message_fut = new_message_fut.result()
+    assert msg.body == b'hello'
+    assert isinstance(new_message_fut, concurrent.futures.Future)
+
+    # Test that we can cancel the consumer
+    fut = ready_channel.send_BasicCancel(b'foo', no_wait=no_wait)
+
+    if not no_wait:
+        method = amqpframe.methods.BasicCancelOK(consumer_tag=b'foo')
+        frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+        ready_channel.handle_frame(frame)
+
+        assert fut.done() and not fut.cancelled()
+    else:
+        assert fut is None
 
     method = amqpframe.methods.BasicDeliver(**delivery_info)
     frame = amqpframe.MethodFrame(ready_channel._channel_id, method)

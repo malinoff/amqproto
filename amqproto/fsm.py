@@ -5,6 +5,7 @@ from fsmpy import Transition as T
 # Set of finite-state machines describing various
 # parts of AMQP protocol.
 
+
 class Connection:
     initial_state = 'disconnected'
 
@@ -103,6 +104,10 @@ class Exchange:
 
         T(event='receive_ExchangeDeclareOK',
           source='sent_ExchangeDeclare',
+          dest='channel_idle'),
+
+        T(event='send_ExchangeDeclare_nowait',
+          source='channel_idle',
           dest='channel_idle'),
 
         T(event='receive_ExchangeDeclare_nowait',
@@ -494,6 +499,21 @@ class ChannelFraming:
         T(event='send_MethodFrame',
           source='sent_MethodFrame',
           dest='sent_MethodFrame'),
+
+        T(event='send_MethodFrame_nowait',
+          source='sent_MethodFrame',
+          dest='channel_idle'),
+
+        # This event should be triggered when a basic message
+        # is received completely (or partially, according to the spec).
+        # This can happen right after received_ContentHeaderFrame
+        # if body length is 0, or after a bunch of receive_ContentBodyFrame
+        # events (which all ends up in received_ContentHeaderFrame state).
+        # The last case is after received_MethodFrame in case a peer decided
+        # to stop the transmission.
+        T(event='receive_BasicMessage',
+          source='.*',
+          dest='channel_idle'),
     ]
 
 

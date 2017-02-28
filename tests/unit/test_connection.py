@@ -346,6 +346,21 @@ def test_receive_frame_too_big(ready_connection):
     with pytest.raises(amqproto.errors.FrameError):
         list(ready_connection.receive_frames(data))
 
+    stream = io.BytesIO()
+    payload = amqpframe.methods.ConnectionStart(
+        version_major=0,
+        version_minor=9,
+        server_properties={k: k for k in range(100)},
+        mechanisms='PLAIN ' * 100,
+        locales='en_EN ' * 100,
+    )
+    frame = amqpframe.MethodFrame(1, payload)
+    frame.to_bytestream(stream)
+    data = stream.getvalue()
+
+    with pytest.raises(amqproto.errors.FrameError):
+        list(ready_connection.receive_frames(data))
+
 
 class CustomAuth(Auth):
     mechanism = b'CUSTOMAUTH'

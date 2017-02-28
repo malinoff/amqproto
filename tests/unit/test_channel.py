@@ -36,6 +36,16 @@ def test_incorrect_channel_opening(ready_connection):
         ready_connection.get_channel()
 
 
+def test_can_get_an_existing_channel(ready_connection, ready_channel):
+    chan = ready_connection.get_channel(1)
+    assert chan is ready_channel
+
+
+def test_can_explicitly_ask_for_a_channel_id(ready_connection):
+    chan = ready_connection.get_channel(120)
+    assert chan._channel_id == 120
+
+
 def test_correct_ChannelClose_sending(ready_channel):
     method, args = draw_method_example(amqpframe.methods.ChannelClose)
 
@@ -100,3 +110,15 @@ def test_ChannelFlow_receiving(ready_channel):
 
     assert method_bytes.getvalue() in ready_channel.data_to_send()
     assert not ready_channel.active
+
+
+def test_connection_sends_channels_data(ready_connection, ready_channel):
+    ready_channel.send_ChannelFlow(active=True)
+
+    data_to_send = ready_connection.data_to_send()
+
+    method_bytes = io.BytesIO()
+    method = amqpframe.methods.ChannelFlow(active=True)
+    method.to_bytestream(method_bytes)
+
+    assert method_bytes.getvalue() in data_to_send

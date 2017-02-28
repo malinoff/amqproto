@@ -50,6 +50,12 @@ class Channel:
         # consumer_tag -> message_future mapping
         self._consumers = {}
 
+        # Sequence number of next published message requiring confirmation.
+        self._next_publish_seq_no = 0
+        self._unconfirmed_set = set()
+        self._ack_fut = Future()
+        self._nack_fut = Future()
+
         self.alive = False
         self.active = True
 
@@ -79,6 +85,7 @@ class Channel:
             methods.BasicGetOK: self.receive_BasicGetOK,
             methods.BasicGetEmpty: self.receive_BasicGetEmpty,
             methods.BasicAck: self.receive_BasicAck,
+            methods.BasicNack: self.receive_BasicNack,
             methods.BasicQosOK: self.receive_BasicQosOK,
             methods.BasicRecoverOK: self.receive_BasicRecoverOK,
             methods.BasicReturn: self.receive_BasicReturn,
@@ -98,7 +105,7 @@ class Channel:
     def _send_method(self, method):
         logger.debug(
             'Sending %s [channel_id:%s]',
-            method.__class__.__name__, self._channel_id
+            method.__class__.__name__, self._channel_id,
         )
         no_wait = (getattr(method, 'no_wait', False) or
                    getattr(method, 'nowait', False))
@@ -109,21 +116,23 @@ class Channel:
         else:
             event = 'send_MethodFrame'
         self._framing_fsm.trigger(event)
-        self._fsm.trigger('send_' + method.__class__.__name__)
+        self._fsm.trigger('send_{}{}'.format(
+            method.__class__.__name__, '_nowait' if no_wait else ''
+        ))
         frame = amqpframe.MethodFrame(self._channel_id, method)
         frame.to_bytestream(self._buffer)
 
     def handle_frame(self, frame):
         if isinstance(frame, amqpframe.MethodFrame):
             method = frame.payload
-            logger.debug(
-                'Receiving MethodFrame %s [channel_id:%s]',
-                method.__class__.__name__, self._channel_id
-            )
             if getattr(method, 'content', False):
                 event = 'receive_MethodFrame_content'
             else:
                 event = 'receive_MethodFrame'
+            logger.debug(
+                'Receiving MethodFrame %s [channel_id:%s]',
+                method.__class__.__name__, self._channel_id,
+            )
             self._framing_fsm.trigger(event)
             if self._message is not None:
                 # A peer decided to stop sending the message for some reason
@@ -168,6 +177,8 @@ class Channel:
         frame.to_bytestream(self._buffer)
 
     def _process_message(self):
+        self._framing_fsm.trigger('receive_BasicMessage')
+
         message, self._message = self._message, None
         if self._message_fut is not None:
             self._message_fut.set_result(message)
@@ -416,6 +427,9 @@ class Channel:
 
     def send_BasicPublish(self, message, exchange='', routing_key='',
                           mandatory=False, immediate=False):
+        if self._next_publish_seq_no > 0:
+            self._unconfirmed_set.add(self._next_publish_seq_no)
+            self._next_publish_seq_no += 1
         method = amqpframe.methods.BasicPublish(
             exchange=exchange, routing_key=routing_key,
             mandatory=mandatory, immediate=immediate,
@@ -482,8 +496,18 @@ class Channel:
         self._send_method(method)
 
     def receive_BasicAck(self, frame):
-        # TODO implement this
-        pass
+        delivery_tag = frame.payload.delivery_tag
+        multiple = frame.payload.multiple
+        if multiple:
+            self._unconfirmed_set.difference_update(
+                {i for i in range(delivery_tag)}
+            )
+        else:
+            self._unconfirmed_set.remove(delivery_tag)
+
+        new_ack_fut = Future()
+        self._ack_fut.set_result(new_ack_fut)
+        self._ack_fut = new_ack_fut
 
     def send_BasicReject(self, delivery_tag='', requeue=False):
         method = amqpframe.Methods.BasicReject(
@@ -509,6 +533,20 @@ class Channel:
             delivery_tag=delivery_tag, multiple=multiple, requeue=requeue
         )
         self._send_method(method)
+
+    def receive_BasicNack(self, frame):
+        delivery_tag = frame.payload.delivery_tag
+        multiple = frame.payload.multiple
+        if multiple:
+            self._unconfirmed_set.difference_update(
+                {i for i in range(delivery_tag)}
+            )
+        else:
+            self._unconfirmed_set.remove(delivery_tag)
+
+        new_nack_fut = Future()
+        self._nack_fut.set_result(new_nack_fut)
+        self._nack_fut = new_nack_fut
 
     def send_TxSelect(self):
         method = amqpframe.methods.TxSelect()
@@ -542,9 +580,14 @@ class Channel:
         self._send_method(method)
         if not no_wait:
             return self._fut
+        if self._next_publish_seq_no == 0:
+            self._next_publish_seq_no = 1
+        return self._ack_fut, self._nack_fut
 
     def receive_ConfirmSelectOK(self, frame):
-        self._fut.set_result(None)
+        if self._next_publish_seq_no == 0:
+            self._next_publish_seq_no = 1
+        self._fut.set_result((self._ack_fut, self._nack_fut))
         self._fut = Future()
 
 
@@ -574,10 +617,10 @@ class ChannelsManager(collections.abc.Mapping):
                 self._channels[channel_id] = channel
         return channel
 
-    def __iter__(self):
+    def __iter__(self):  # pragma: no cover
         return iter(self._channels)
 
-    def __len__(self):
+    def __len__(self):  # pragma: no cover
         return len(self._channels)
 
 
