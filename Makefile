@@ -25,14 +25,14 @@ codestyle-autoformat: codestyle-deps
 codestyle-deps:
 	$(PIP) install -r requirements/codestyle.txt
 
-integrationtests: tests-deps
+functionaltests: tests-deps
 	which docker-compose >/dev/null 2>&1 && docker-compose up -d
-	sleep 10
-	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/integration
+	sleep 2
+	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing --cov-config=tests/functional/coveragerc tests/functional
 	which docker-compose >/dev/null 2>&1 && docker-compose down
 
 unittests: tests-deps
-	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered tests/unit
+	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered --cov-config=tests/unit/coveragerc tests/unit
 
 tests-deps:
 	$(PIP) install -r requirements/test.txt

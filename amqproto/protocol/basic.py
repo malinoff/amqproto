@@ -11,7 +11,7 @@ import collections
 
 from . import types
 
-__all__ = ['Message']
+__all__ = ['BasicMessage']
 
 PROPERTIES = collections.OrderedDict((
     ('content_type', types.Shortstr),
@@ -36,9 +36,7 @@ class DeliveryMode(enum.Enum):
     Persistent = 2
 
 
-class Message:
-    """Basic message."""
-
+class BasicMessage:
     DeliveryMode = DeliveryMode
     PROPERTIES = PROPERTIES
 

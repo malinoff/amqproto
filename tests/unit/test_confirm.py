@@ -34,7 +34,7 @@ def test_publish_in_confirm_mode(confirm_channel):
 
     # First, test BasicAck handling
     body = b'hello, world'
-    message = protocol.basic.Message(body)
+    message = protocol.BasicMessage(body)
     confirm_channel.basic_publish(message)
 
     assert not ack_fut.done()

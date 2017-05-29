@@ -53,7 +53,7 @@ class Channel:
         self._ack_fut = self.Future()
         self._nack_fut = self.Future()
 
-        self.alive = False
+        self.alive = True
         self.active = True
 
     def _setup_method_handlers(self):
@@ -100,7 +100,7 @@ class Channel:
 
     def _send_method(self, method):
         logger.debug(
-            'Sending %s [channel_id:%s]',
+            'Sending MethodFrame %s [channel_id:%s]',
             method.__class__.__name__, self._channel_id,
         )
         no_wait = (getattr(method, 'no_wait', False) or
@@ -460,7 +460,7 @@ class Channel:
                 'but there is no such consumer'.format(consumer_tag),
                 class_id, method_id
             )
-        self._message = protocol.basic.Message(delivery_info=frame.payload)
+        self._message = protocol.BasicMessage(delivery_info=frame.payload)
 
     def basic_get(self, queue, no_ack=False):
         method = protocol.BasicGet(queue=queue, no_ack=no_ack)
@@ -469,7 +469,7 @@ class Channel:
 
     def _receive_BasicGetOK(self, frame):
         method = frame.payload
-        self._message = protocol.basic.Message(delivery_info={
+        self._message = protocol.BasicMessage(delivery_info={
             'delivery_tag': method.delivery_tag,
             'redelivered': method.redelivered,
             'exchange': method.exchange,

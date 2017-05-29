@@ -5,4 +5,4 @@ exclude_lines =
     raise NotImplementedError
 
 [run]
-omit = amqproto/adapters/*
+omit = amqproto/io/*

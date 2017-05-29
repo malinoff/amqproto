@@ -113,7 +113,7 @@ class Connection:
         }
 
         self._heartbeater = Heartbeater(self)
-        self.alive = False
+        self.alive = True
 
     def _setup_method_handlers(self):
         return {
@@ -198,7 +198,7 @@ class Connection:
 
     def _send_method(self, method):
         logger.debug(
-            'Sending %s [channel_id:%s]',
+            'Sending MethodFrame %s [channel_id:%s]',
             method.__class__.__name__, self._channel_id
         )
         self._heartbeater.update_sent_time()

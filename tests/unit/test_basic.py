@@ -27,7 +27,7 @@ def test_BasicQos(ready_channel):
 def test_BasicPublish(ready_channel):
     # We build a relatively large message - to exceed frame_max a bit
     body = b'hello, world' * 100
-    message = protocol.Message(body)
+    message = protocol.BasicMessage(body)
     ready_channel.basic_publish(message)
 
     data_to_send = ready_channel.data_to_send()
@@ -80,7 +80,7 @@ def test_BasicGet_OK(ready_channel):
     message_fut = fut.result()
 
     body = b'hello, world' * 100
-    message = protocol.Message(body)
+    message = protocol.BasicMessage(body)
 
     payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
@@ -151,7 +151,7 @@ def test_BasicConsume(no_wait, ready_channel):
     ready_channel.handle_frame(frame)
 
     body = b'hello, world'
-    message = protocol.Message(body)
+    message = protocol.BasicMessage(body)
 
     payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
@@ -175,7 +175,7 @@ def test_BasicConsume(no_wait, ready_channel):
     ready_channel.handle_frame(frame)
 
     body = b''
-    message = protocol.Message(body)
+    message = protocol.BasicMessage(body)
 
     payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
@@ -195,7 +195,7 @@ def test_BasicConsume(no_wait, ready_channel):
     ready_channel.handle_frame(frame)
 
     body = b'hello, world'
-    message = protocol.Message(body)
+    message = protocol.BasicMessage(body)
 
     payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
