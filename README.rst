@@ -21,7 +21,7 @@ of adapters for various networking libraries:
 ===========  =============================
 I/O library  Adapter
 ===========  =============================
-asyncio_     ``amqproto.adapters.asyncio``
+asyncio_     ``amqproto.io.asyncio``
 curio_       **Not supported yet**
 Twisted_     **Not supported yet**
 socket_      **Not supported yet**
