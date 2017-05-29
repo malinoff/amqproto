@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-import amqproto.errors
+from amqproto import protocol
 
 
 def test_missed_heartbeats(ready_connection):
@@ -11,7 +11,7 @@ def test_missed_heartbeats(ready_connection):
     # Surely skip at least 2 heartbeats
     time.sleep(2.5 * ready_connection.properties['heartbeat'])
 
-    with pytest.raises(amqproto.errors.HardError):
+    with pytest.raises(protocol.HardError):
         ready_connection.check_heartbeats()
 
 

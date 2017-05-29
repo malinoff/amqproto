@@ -3,24 +3,22 @@ import concurrent.futures
 
 import pytest
 
-import amqpframe
-import amqpframe.basic
-import amqpframe.methods
+from amqproto import protocol
 
 from .strategies import draw_method_example
 
 
 def test_BasicQos(ready_channel):
-    method, args = draw_method_example(amqpframe.methods.BasicQos)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method, args = draw_method_example(protocol.BasicQos)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
 
-    fut = ready_channel.send_BasicQos(**args)
+    fut = ready_channel.basic_qos(**args)
     method_bytes = io.BytesIO()
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_channel.data_to_send()
 
-    method = amqpframe.methods.BasicQosOK()
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.BasicQosOK()
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
@@ -29,43 +27,43 @@ def test_BasicQos(ready_channel):
 def test_BasicPublish(ready_channel):
     # We build a relatively large message - to exceed frame_max a bit
     body = b'hello, world' * 100
-    message = amqpframe.basic.Message(body)
-    ready_channel.send_BasicPublish(message)
+    message = protocol.Message(body)
+    ready_channel.basic_publish(message)
 
     data_to_send = ready_channel.data_to_send()
 
     stream = io.BytesIO()
-    method = amqpframe.methods.BasicPublish(
+    method = protocol.BasicPublish(
         exchange='', routing_key='', mandatory=False, immediate=False,
     )
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     frame.to_bytestream(stream)
 
-    payload = amqpframe.ContentHeaderPayload(
+    payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
         body_size=message.body_size,
         properties=message.properties,
     )
-    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    frame = protocol.ContentHeaderFrame(ready_channel._channel_id, payload)
     frame.to_bytestream(stream)
 
-    max_payload_size = ready_channel._frame_max - amqpframe.Frame.METADATA_SIZE
+    max_payload_size = ready_channel._frame_max - protocol.Frame.METADATA_SIZE
 
     chunk = body[:max_payload_size]
-    payload = amqpframe.ContentBodyPayload(chunk)
-    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    payload = protocol.ContentBodyPayload(chunk)
+    frame = protocol.ContentBodyFrame(ready_channel._channel_id, payload)
     frame.to_bytestream(stream)
 
     chunk = body[max_payload_size:]
-    payload = amqpframe.ContentBodyPayload(chunk)
-    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    payload = protocol.ContentBodyPayload(chunk)
+    frame = protocol.ContentBodyFrame(ready_channel._channel_id, payload)
     frame.to_bytestream(stream)
 
     assert stream.getvalue() in data_to_send
 
 
 def test_BasicGet_OK(ready_channel):
-    fut = ready_channel.send_BasicGet('myqueue')
+    fut = ready_channel.basic_get('myqueue')
 
     delivery_info = {
         'delivery_tag': 125,
@@ -74,36 +72,36 @@ def test_BasicGet_OK(ready_channel):
         'routing_key': b'myroutingkey',
         'message_count': 10,
     }
-    method = amqpframe.methods.BasicGetOK(**delivery_info)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.BasicGetOK(**delivery_info)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
     assert fut.done() and not fut.cancelled()
 
     message_fut = fut.result()
 
     body = b'hello, world' * 100
-    message = amqpframe.basic.Message(body)
+    message = protocol.Message(body)
 
-    payload = amqpframe.ContentHeaderPayload(
+    payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
         body_size=message.body_size,
         properties=message.properties,
     )
-    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    frame = protocol.ContentHeaderFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
     assert not message_fut.done()
 
-    max_payload_size = ready_channel._frame_max - amqpframe.Frame.METADATA_SIZE
+    max_payload_size = ready_channel._frame_max - protocol.Frame.METADATA_SIZE
 
     chunk = body[:max_payload_size]
-    payload = amqpframe.ContentBodyPayload(chunk)
-    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    payload = protocol.ContentBodyPayload(chunk)
+    frame = protocol.ContentBodyFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
     assert not message_fut.done()
 
     chunk = body[max_payload_size:]
-    payload = amqpframe.ContentBodyPayload(chunk)
-    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    payload = protocol.ContentBodyPayload(chunk)
+    frame = protocol.ContentBodyFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
     assert message_fut.done() and not message_fut.cancelled()
 
@@ -118,10 +116,10 @@ def test_BasicGet_OK(ready_channel):
 
 
 def test_BasicGet_Empty(ready_channel):
-    fut = ready_channel.send_BasicGet('myqueue')
+    fut = ready_channel.basic_get('myqueue')
 
-    method = amqpframe.methods.BasicGetEmpty()
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.BasicGetEmpty()
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
@@ -130,11 +128,11 @@ def test_BasicGet_Empty(ready_channel):
 
 @pytest.mark.parametrize('no_wait', [False, True])
 def test_BasicConsume(no_wait, ready_channel):
-    fut = ready_channel.send_BasicConsume(consumer_tag=b'foo', no_wait=no_wait)
+    fut = ready_channel.basic_consume(consumer_tag=b'foo', no_wait=no_wait)
 
     if not no_wait:
-        method = amqpframe.methods.BasicConsumeOK(consumer_tag=b'foo')
-        frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+        method = protocol.BasicConsumeOK(consumer_tag=b'foo')
+        frame = protocol.MethodFrame(ready_channel._channel_id, method)
         ready_channel.handle_frame(frame)
 
         assert fut.done() and not fut.cancelled()
@@ -148,23 +146,23 @@ def test_BasicConsume(no_wait, ready_channel):
         'exchange': b'myexchange',
         'routing_key': b'myroutingkey',
     }
-    method = amqpframe.methods.BasicDeliver(**delivery_info)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.BasicDeliver(**delivery_info)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     body = b'hello, world'
-    message = amqpframe.basic.Message(body)
+    message = protocol.Message(body)
 
-    payload = amqpframe.ContentHeaderPayload(
+    payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
         body_size=message.body_size,
         properties=message.properties,
     )
-    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    frame = protocol.ContentHeaderFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
 
-    payload = amqpframe.ContentBodyPayload(body)
-    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    payload = protocol.ContentBodyPayload(body)
+    frame = protocol.ContentBodyFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
 
     msg, new_message_fut = fut.result()
@@ -172,19 +170,19 @@ def test_BasicConsume(no_wait, ready_channel):
     assert isinstance(new_message_fut, concurrent.futures.Future)
 
     # Test a couple of edge cases: 0 body size message
-    method = amqpframe.methods.BasicDeliver(**delivery_info)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.BasicDeliver(**delivery_info)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     body = b''
-    message = amqpframe.basic.Message(body)
+    message = protocol.Message(body)
 
-    payload = amqpframe.ContentHeaderPayload(
+    payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
         body_size=message.body_size,
         properties=message.properties,
     )
-    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    frame = protocol.ContentHeaderFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
 
     msg, new_message_fut = new_message_fut.result()
@@ -192,27 +190,27 @@ def test_BasicConsume(no_wait, ready_channel):
     assert isinstance(new_message_fut, concurrent.futures.Future)
 
     # and partial sending
-    method = amqpframe.methods.BasicDeliver(**delivery_info)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.BasicDeliver(**delivery_info)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     body = b'hello, world'
-    message = amqpframe.basic.Message(body)
+    message = protocol.Message(body)
 
-    payload = amqpframe.ContentHeaderPayload(
+    payload = protocol.ContentHeaderPayload(
         class_id=method.method_type[0],
         body_size=message.body_size,
         properties=message.properties,
     )
-    frame = amqpframe.ContentHeaderFrame(ready_channel._channel_id, payload)
+    frame = protocol.ContentHeaderFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
 
-    payload = amqpframe.ContentBodyPayload(b'hello')
-    frame = amqpframe.ContentBodyFrame(ready_channel._channel_id, payload)
+    payload = protocol.ContentBodyPayload(b'hello')
+    frame = protocol.ContentBodyFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
 
-    method = amqpframe.methods.ChannelFlow(active=True)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.ChannelFlow(active=True)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     msg, new_message_fut = new_message_fut.result()
@@ -220,18 +218,18 @@ def test_BasicConsume(no_wait, ready_channel):
     assert isinstance(new_message_fut, concurrent.futures.Future)
 
     # Test that we can cancel the consumer
-    fut = ready_channel.send_BasicCancel(b'foo', no_wait=no_wait)
+    fut = ready_channel.basic_cancel(b'foo', no_wait=no_wait)
 
     if not no_wait:
-        method = amqpframe.methods.BasicCancelOK(consumer_tag=b'foo')
-        frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+        method = protocol.BasicCancelOK(consumer_tag=b'foo')
+        frame = protocol.MethodFrame(ready_channel._channel_id, method)
         ready_channel.handle_frame(frame)
 
         assert fut.done() and not fut.cancelled()
     else:
         assert fut is None
 
-    method = amqpframe.methods.BasicDeliver(**delivery_info)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
-    with pytest.raises(amqpframe.errors.CommandInvalid):
+    method = protocol.BasicDeliver(**delivery_info)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
+    with pytest.raises(protocol.CommandInvalid):
         ready_channel.handle_frame(frame)

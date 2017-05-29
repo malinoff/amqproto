@@ -3,23 +3,21 @@ import concurrent.futures
 
 import pytest
 
-import amqpframe
-import amqpframe.basic
-import amqpframe.methods
+from amqproto import protocol
 
 
 @pytest.mark.parametrize('no_wait', [False, True])
 def test_ConfirmSelect(no_wait, ready_channel):
-    fut = ready_channel.send_ConfirmSelect(no_wait=no_wait)
+    fut = ready_channel.confirm_select(no_wait=no_wait)
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ConfirmSelect(nowait=no_wait)
+    method = protocol.ConfirmSelect(nowait=no_wait)
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_channel.data_to_send()
 
     if not no_wait:
-        method = amqpframe.methods.ConfirmSelectOK()
-        frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+        method = protocol.ConfirmSelectOK()
+        frame = protocol.MethodFrame(ready_channel._channel_id, method)
         ready_channel.handle_frame(frame)
         assert fut.done() and not fut.cancelled()
         ack_fut, nack_fut = fut.result()
@@ -31,31 +29,31 @@ def test_ConfirmSelect(no_wait, ready_channel):
 
 
 def test_publish_in_confirm_mode(confirm_channel):
-    fut = confirm_channel._confirm_fut
+    ack_fut = confirm_channel._ack_fut
+    nack_fut = confirm_channel._nack_fut
 
     # First, test BasicAck handling
     body = b'hello, world'
-    message = amqpframe.basic.Message(body)
-    confirm_channel.send_BasicPublish(message)
+    message = protocol.basic.Message(body)
+    confirm_channel.basic_publish(message)
 
-    assert not fut.ready()
+    assert not ack_fut.done()
+    assert not nack_fut.done()
 
-    method = amqpframe.methods.BasicAck(delivery_tag=1, multiple=False)
-    frame = amqpframe.MethodFrame(confirm_channel._channel_id, method)
+    method = protocol.BasicAck(delivery_tag=1, multiple=False)
+    frame = protocol.MethodFrame(confirm_channel._channel_id, method)
     confirm_channel.handle_frame(frame)
 
-    assert fut.ready() and not fut.cancelled()
-    ack_fut, nack_fut = fut.result()
+    assert ack_fut.done() and not ack_fut.cancelled()
 
     # Second, test BasicNack handling
-    confirm_channel.send_BasicPublish(message)
-    confirm_channel.send_BasicPublish(message)
+    confirm_channel.basic_publish(message)
+    confirm_channel.basic_publish(message)
 
-    method = amqpframe.methods.BasicNack(
+    method = protocol.BasicNack(
         delivery_tag=4, multiple=True, requeue=False
     )
-    frame = amqpframe.MethodFrame(confirm_channel._channel_id, method)
+    frame = protocol.MethodFrame(confirm_channel._channel_id, method)
     confirm_channel.handle_frame(frame)
 
-    assert confirm_fut.ready() and not confirm_fut.cancelled()
-    confirm_fut = confirm_fut.result()
+    assert nack_fut.done() and not nack_fut.cancelled()

@@ -1,4 +1,4 @@
-import amqpframe.types
+from .protocol import types
 
 
 class Auth:
@@ -32,7 +32,7 @@ class AMQPLAIN(PLAIN):
     mechanism = b'AMQPLAIN'
 
     def to_bytestream(self, stream):
-        val = amqpframe.types.Table((
+        val = types.Table((
             (b'LOGIN', self.username),
             (b'PASSWORD', self.password),
         ))

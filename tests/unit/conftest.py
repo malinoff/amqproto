@@ -1,8 +1,7 @@
 import io
 import pytest
 
-import amqpframe
-import amqpframe.methods
+from amqproto import protocol
 
 from amqproto.connection import Connection
 
@@ -14,14 +13,14 @@ def ready_connection():
 
     conn._heartbeater.update_received_time()
 
-    payload = amqpframe.methods.ConnectionStart(
+    payload = protocol.ConnectionStart(
         version_major=0,
         version_minor=9,
         server_properties={'foo': 'bar'},
         mechanisms=b'PLAIN AMQPLAIN',
         locales=b'en_US ru_RU',
     )
-    frame = amqpframe.MethodFrame(0, payload)
+    frame = protocol.MethodFrame(0, payload)
     conn.handle_frame(frame)
 
     conn._heartbeater.update_received_time()
@@ -29,18 +28,18 @@ def ready_connection():
     channel_max = 2
     frame_max = 1000
     heartbeat = 1
-    payload = amqpframe.methods.ConnectionTune(
+    payload = protocol.ConnectionTune(
         channel_max=channel_max,
         frame_max=frame_max,
         heartbeat=heartbeat,
     )
-    frame = amqpframe.MethodFrame(0, payload)
+    frame = protocol.MethodFrame(0, payload)
     conn.handle_frame(frame)
 
     conn._heartbeater.update_received_time()
 
-    payload = amqpframe.methods.ConnectionOpenOK()
-    frame = amqpframe.MethodFrame(0, payload)
+    payload = protocol.ConnectionOpenOK()
+    frame = protocol.MethodFrame(0, payload)
     conn.handle_frame(frame)
 
     conn.data_to_send()
@@ -50,10 +49,10 @@ def ready_connection():
 @pytest.fixture
 def ready_channel(ready_connection):
     channel = ready_connection.get_channel()
-    channel.send_ChannelOpen()
+    channel.open()
 
-    payload = amqpframe.methods.ChannelOpenOK()
-    frame = amqpframe.MethodFrame(channel._channel_id, payload)
+    payload = protocol.ChannelOpenOK()
+    frame = protocol.MethodFrame(channel._channel_id, payload)
 
     ready_connection.handle_frame(frame)
     return channel
@@ -61,30 +60,30 @@ def ready_channel(ready_connection):
 
 @pytest.fixture
 def tx_channel(ready_channel):
-    fut = ready_channel.send_TxSelect()
+    fut = ready_channel.tx_select()
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.TxSelect()
+    method = protocol.TxSelect()
     method.to_bytestream(method_bytes)
     ready_channel.data_to_send()
 
-    method = amqpframe.methods.TxSelectOK()
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.TxSelectOK()
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
     return ready_channel
 
 
 @pytest.fixture
 def confirm_channel(ready_channel):
-    fut = ready_channel.send_ConfirmSelect()
+    fut = ready_channel.confirm_select()
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ConfirmSelect()
+    method = protocol.ConfirmSelect(nowait=False)
     method.to_bytestream(method_bytes)
     ready_channel.data_to_send()
 
-    method = amqpframe.methods.ConfirmSelectOK()
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.ConfirmSelectOK()
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
     return ready_channel
 

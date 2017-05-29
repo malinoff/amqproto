@@ -2,11 +2,7 @@ import io
 
 import pytest
 
-import amqpframe
-import amqpframe.methods
-
-import amqproto
-import amqproto.errors
+from amqproto import protocol
 
 from .strategies import draw_method_example
 
@@ -15,10 +11,10 @@ def test_correct_channel_opening(ready_connection):
     channel = ready_connection.get_channel()
     assert channel._channel_id == 1
 
-    channel.send_ChannelOpen()
+    channel.open()
 
-    payload = amqpframe.methods.ChannelOpenOK()
-    frame = amqpframe.MethodFrame(channel._channel_id, payload)
+    payload = protocol.ChannelOpenOK()
+    frame = protocol.MethodFrame(channel._channel_id, payload)
 
     ready_connection.handle_frame(frame)
     assert channel.alive
@@ -32,7 +28,7 @@ def test_incorrect_channel_opening(ready_connection):
         channel = ready_connection.get_channel()
         assert channel._channel_id == i + 1
 
-    with pytest.raises(amqproto.errors.HardError):
+    with pytest.raises(protocol.HardError):
         ready_connection.get_channel()
 
 
@@ -47,15 +43,15 @@ def test_can_explicitly_ask_for_a_channel_id(ready_connection):
 
 
 def test_correct_ChannelClose_sending(ready_channel):
-    method, args = draw_method_example(amqpframe.methods.ChannelClose)
+    method, args = draw_method_example(protocol.ChannelClose)
 
-    fut = ready_channel.send_ChannelClose(**args)
+    fut = ready_channel.close(**args)
     method_bytes = io.BytesIO()
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_channel.data_to_send()
 
-    method = amqpframe.methods.ChannelCloseOK()
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.ChannelCloseOK()
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
@@ -63,14 +59,14 @@ def test_correct_ChannelClose_sending(ready_channel):
 
 
 def test_correct_ChannelClose_handling(ready_channel):
-    method, args = draw_method_example(amqpframe.methods.ChannelClose)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method, args = draw_method_example(protocol.ChannelClose)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
 
-    with pytest.raises(amqproto.errors.AMQPError) as excinfo:
+    with pytest.raises(protocol.AMQPError) as excinfo:
         ready_channel.handle_frame(frame)
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ChannelCloseOK()
+    method = protocol.ChannelCloseOK()
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_channel.data_to_send()
 
@@ -82,14 +78,14 @@ def test_correct_ChannelClose_handling(ready_channel):
     assert exc.class_id == args['class_id']
     assert exc.method_id == args['method_id']
 
-    assert isinstance(exc, amqproto.errors.ERRORS_BY_CODE[args['reply_code']])
+    assert isinstance(exc, protocol.ERRORS_BY_CODE[args['reply_code']])
 
 
 def test_ChannelFlow_sending(ready_channel):
-    fut = ready_channel.send_ChannelFlow(active=False)
+    fut = ready_channel.flow(active=False)
 
-    method = amqpframe.methods.ChannelFlowOK(active=False)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.ChannelFlowOK(active=False)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
 
     ready_channel.handle_frame(frame)
 
@@ -99,13 +95,13 @@ def test_ChannelFlow_sending(ready_channel):
 
 
 def test_ChannelFlow_receiving(ready_channel):
-    method = amqpframe.methods.ChannelFlow(active=False)
-    frame = amqpframe.MethodFrame(ready_channel._channel_id, method)
+    method = protocol.ChannelFlow(active=False)
+    frame = protocol.MethodFrame(ready_channel._channel_id, method)
 
     ready_channel.handle_frame(frame)
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ChannelFlowOK(active=False)
+    method = protocol.ChannelFlowOK(active=False)
     method.to_bytestream(method_bytes)
 
     assert method_bytes.getvalue() in ready_channel.data_to_send()
@@ -113,12 +109,12 @@ def test_ChannelFlow_receiving(ready_channel):
 
 
 def test_connection_sends_channels_data(ready_connection, ready_channel):
-    ready_channel.send_ChannelFlow(active=True)
+    ready_channel.flow(active=True)
 
     data_to_send = ready_connection.data_to_send()
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ChannelFlow(active=True)
+    method = protocol.ChannelFlow(active=True)
     method.to_bytestream(method_bytes)
 
     assert method_bytes.getvalue() in data_to_send

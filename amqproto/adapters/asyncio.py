@@ -8,7 +8,7 @@ class AMQP(asyncio.streams.FlowControlMixin, asyncio.Protocol):
 
     def __init__(self, *, loop):
         super().__init__(loop=loop)
-        self.connection = AMQPConnection()
+        self._sansio_connection = AMQPConnection()
 
         self._transport = None
         self._ready_fut = None
@@ -17,19 +17,19 @@ class AMQP(asyncio.streams.FlowControlMixin, asyncio.Protocol):
         super().connection_made(transport)
 
         self._transport = transport
-        fut = self.connection.initiate_connection()
+        fut = self._sansio_connection.initiate_connection()
         self._ready_fut = asyncio.wrap_future(fut, loop=self._loop)
 
-        transport.write(self.connection.data_to_send())
+        transport.write(self._sansio_connection.data_to_send())
 
     def data_received(self, data):
         super().data_received(data)
 
-        frames = self.connection.receive_frames(data)
+        frames = self._sansio_connection.receive_frames(data)
         for frame in frames:
-            self.connection.handle_frame(frame)
+            self._sansio_connection.handle_frame(frame)
 
-        self._transport.write(self.connection.data_to_send())
+        self._transport.write(self._sansio_connection.data_to_send())
 
     @asyncio.coroutine
     def drain(self):
@@ -51,14 +51,16 @@ class Connection:
         self._transport = transport
         self._protocol = protocol
         self._loop = protocol._loop
-        self._connection = protocol.connection
+        self._sansio_connection = protocol._sansio_connection
 
     async def open(self):
         return await self._protocol._ready_fut
 
     async def close(self, reply_code=0, reply_text=''):
-        fut = self._connection.send_ConnectionClose(reply_code, reply_text)
-        self._transport.write(self._connection.data_to_send())
+        fut = self._sansio_connection.send_ConnectionClose(
+            reply_code, reply_text
+        )
+        self._transport.write(self._sansio_connection.data_to_send())
         await self._protocol.drain()
         return await asyncio.wrap_future(fut, loop=self._loop)
 
@@ -69,17 +71,16 @@ class Connection:
         await self.close()
 
     def get_channel(self):
-        channel = self._connection.get_channel()
-        channel = Channel(channel, self._transport, self._protocol)
-        return channel
+        sansio_channel = self._sansio_connection.get_channel()
+        return Channel(sansio_channel, self._transport, self._protocol)
 
 
 class Channel:
 
-    def __init__(self, channel, transport, protocol):
+    def __init__(self, sansio_channel, transport, protocol):
         self._transport = transport
         self._protocol = protocol
-        self._channel = channel
+        self._sansio_channel = sansio_channel
         self._loop = protocol._loop
 
     async def open(self):
@@ -100,80 +101,97 @@ class Channel:
     async def __aexit__(self, exc_type, exc, tb):
         await self.close()
 
+    async def actually_send(self, future):
+        self._transport.write(self._sansio_channel.data_to_send())
+        await self._protocol.drain()
+        if future is not None:
+            return asyncio.wrap_future(future, loop=self._loop)
 
-class Exchange:
+    async def flow(self, active):
+        return await self.actually_send(
+            self._sansio_channel.send_ChannelFlow(active)
+        )
 
-    def __init__(self, channel, name):
-        self.name = name
-        self._channel = channel
+    async def exchange_declare(self, exchange, type='direct', passive=False,
+                               durable=False, auto_delete=True, internal=False,
+                               no_wait=False, arguments=None):
+        future = await self.actually_send(
+            self._sansio_channel.send_ExchangeDeclare(
+                exchange, type=type, passive=passive, durable=durable,
+                auto_delete=auto_delete, internal=internal,
+                no_wait=no_wait, arguments=arguments,
+            )
+        )
+        if future is not None:
+            return await future
 
-    async def declare(self):
-        ch = self._channel._channel
-        fut = ch.send_ExchangeDeclare(self.name)
-        self._channel._transport.write(ch.data_to_send())
-        await self._channel._protocol.drain()
-        return await asyncio.wrap_future(fut, loop=self._channel._protocol._loop)
+    async def exchange_delete(self, exchange, if_unused=False, no_wait=False):
+        future = await self.actually_send(
+            self._sansio_channel.send_ExchangeDelete(
+                exchange, if_unused=if_unused, no_wait=no_wait
+            )
+        )
+        if future is not None:
+            return await future
 
-    async def publish(self, message, routing_key='',
-                      mandatory=False, immediate=False):
-        ch = self._channel._channel
-        fut = ch.send_BasicPublish(message, self.name, routing_key=routing_key,
-                                   mandatory=mandatory, immediate=immediate)
-        self._channel._transport.write(ch.data_to_send())
-        await self._channel._protocol.drain()
-        if fut is not None:
-            fut = asyncio.wrap_future(fut, loop=self._channel._protocol._loop)
-            return await fut
+    async def exchange_bind(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_ExchangeBind(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
-    async def delete(self):
-        ch = self._channel._channel
-        fut = ch.send_ExchangeDelete(self.name)
-        self._channel._transport.write(ch.data_to_send())
-        await self._channel._protocol.drain()
-        fut = asyncio.wrap_future(fut, loop=self._channel._protocol._loop)
-        return await fut
+    async def exchange_unbind(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_ExchangeUnbind(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
+    async def queue_declare(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_QueueDeclare(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
-class Queue:
+    async def queue_bind(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_QueueBind(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
-    def __init__(self, channel, name):
-        self._transport = channel._transport
-        self.name = name
-        self.channel = channel._channel
-        self.protocol = channel._protocol
-        self.loop = channel._protocol._loop
+    async def queue_unbind(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_QueueUnbind(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
-    async def declare(self):
-        fut = self.channel.send_QueueDeclare(self.name)
-        self._transport.write(self.channel.data_to_send())
-        await self.protocol.drain()
-        return await asyncio.wrap_future(fut, loop=self.loop)
+    async def queue_purge(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_QueuePurge(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
-    async def bind(self, exchange):
-        if isinstance(exchange, Exchange):
-            exchange = exchange.name
-        fut = self.channel.send_QueueBind(self.name, exchange=exchange)
-        self._transport.write(self.channel.data_to_send())
-        await self.protocol.drain()
-        return await asyncio.wrap_future(fut, loop=self.loop)
+    async def queue_delete(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_QueueDelete(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
-    async def unbind(self, exchange):
-        if isinstance(exchange, Exchange):
-            exchange = exchange.name
-        fut = self.channel.send_QueueUnbind(self.name, exchange=exchange)
-        self._transport.write(self.channel.data_to_send())
-        await self.protocol.drain()
-        return await asyncio.wrap_future(fut, loop=self.loop)
+    async def basic_qos(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_BasicQos(*args, **kwargs)
+        )
+        if future is not None:
+            return await future
 
-    async def get(self):
-        fut = self.channel.send_BasicGet(self.name)
-        self._transport.write(self.channel.data_to_send())
-        await self.protocol.drain()
-        fut = await asyncio.wrap_future(fut, loop=self.loop)
-        return await asyncio.wrap_future(fut, loop=self.loop)
-
-    async def delete(self):
-        fut = self.channel.send_QueueDelete(self.name)
-        self._transport.write(self.channel.data_to_send())
-        await self.protocol.drain()
-        return await asyncio.wrap_future(fut, loop=self.loop)
+    async def basic_consume(self, *args, **kwargs):
+        future = await self.actually_send(
+            self._sansio_channel.send_BasicConsume(*args, **kwargs)
+        )
+        return await future

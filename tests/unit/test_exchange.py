@@ -4,26 +4,25 @@ import pytest
 import hypothesis as h
 import hypothesis.strategies as hs
 
-import amqpframe
-import amqpframe.methods
+from amqproto import protocol
 
 from .strategies import methods
 
 
 @h.given(hs.data())
-@pytest.mark.parametrize('method_cls,ok_method_cls', [
-    (amqpframe.methods.ExchangeDeclare, amqpframe.methods.ExchangeDeclareOK),
-    (amqpframe.methods.ExchangeDelete, amqpframe.methods.ExchangeDeleteOK),
-    (amqpframe.methods.ExchangeBind, amqpframe.methods.ExchangeBindOK),
-    (amqpframe.methods.ExchangeUnbind, amqpframe.methods.ExchangeUnbindOK),
+@pytest.mark.parametrize('method_name,method_cls,ok_method_cls', [
+    ('exchange_declare', protocol.ExchangeDeclare, protocol.ExchangeDeclareOK),
+    ('exchange_delete', protocol.ExchangeDelete, protocol.ExchangeDeleteOK),
+    ('exchange_bind', protocol.ExchangeBind, protocol.ExchangeBindOK),
+    ('exchange_unbind', protocol.ExchangeUnbind, protocol.ExchangeUnbindOK),
 ])
-def test_exchange_related_methods(method_cls, ok_method_cls, subtest, data):
+def test_exchange_related_methods(method_name, method_cls, ok_method_cls, subtest, data):
     @subtest
     def do_test(ready_channel):
         method = data.draw(methods(method_cls))
         ok_method = data.draw(methods(ok_method_cls))
 
-        sender = getattr(ready_channel, 'send_' + method.__class__.__name__)
+        sender = getattr(ready_channel, method_name)
         args = {name: getattr(method, name)
                 for name, _ in method.field_info
                 if not name.startswith('reserved')}
@@ -36,7 +35,7 @@ def test_exchange_related_methods(method_cls, ok_method_cls, subtest, data):
             method.to_bytestream(method_bytes)
             assert method_bytes.getvalue() in ready_channel.data_to_send()
         else:
-            frame = amqpframe.MethodFrame(ready_channel._channel_id, ok_method)
+            frame = protocol.MethodFrame(ready_channel._channel_id, ok_method)
 
             ready_channel.handle_frame(frame)
 

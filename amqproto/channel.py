@@ -4,19 +4,16 @@ import collections
 import collections.abc
 from concurrent.futures import Future
 
-import amqpframe
-import amqpframe.basic
-import amqpframe.methods
-
-from fsmpy import FunctionalMachine
+from . import protocol
 
 from . import fsm
-from . import errors
 
 logger = logging.getLogger(__name__)
 
 
 class Channel:
+
+    Future = Future
 
     def __init__(self, channel_id, frame_max):
         self._channel_id = channel_id
@@ -24,23 +21,23 @@ class Channel:
 
         self._buffer = io.BytesIO()
         # Future used to synchronise Do/DoOK methods
-        self._fut = Future()
+        self._fut = self.Future()
         self._method_handlers = self._setup_method_handlers()
 
-        self._fsm = FunctionalMachine(
+        self._fsm = fsm.FunctionalMachine(
             'channel_fsm',
             transitions=fsm.Channel.transitions,
             states=fsm.Channel.states,
             initial_state=fsm.Channel.initial_state,
         )
-        self._framing_fsm = FunctionalMachine(
+        self._framing_fsm = fsm.FunctionalMachine(
             'framing_fsm',
             transitions=fsm.ChannelFraming.transitions,
             states=fsm.ChannelFraming.states,
             initial_state=fsm.ChannelFraming.initial_state,
         )
 
-        # amqpframe.basic.Message is instantiated in received_BasicDeliver,
+        # protocol.Message is instantiated in _receive_BasicDeliver,
         # its delivery_info is set. Later, basic properties are set in
         # handle_frame: ContentHeaderFrame and body is updated in
         # handle_frame: ContentBodyFrame
@@ -53,48 +50,47 @@ class Channel:
         # Sequence number of next published message requiring confirmation.
         self._next_publish_seq_no = 0
         self._unconfirmed_set = set()
-        self._ack_fut = Future()
-        self._nack_fut = Future()
+        self._ack_fut = self.Future()
+        self._nack_fut = self.Future()
 
         self.alive = False
         self.active = True
 
     def _setup_method_handlers(self):
-        methods = amqpframe.methods
         return {
-            methods.ChannelOpenOK: self.receive_ChannelOpenOK,
-            methods.ChannelClose: self.receive_ChannelClose,
-            methods.ChannelCloseOK: self.receive_ChannelCloseOK,
-            methods.ChannelFlow: self.receive_ChannelFlow,
-            methods.ChannelFlowOK: self.receive_ChannelFlowOK,
+            protocol.ChannelOpenOK: self._receive_ChannelOpenOK,
+            protocol.ChannelClose: self._receive_ChannelClose,
+            protocol.ChannelCloseOK: self._receive_ChannelCloseOK,
+            protocol.ChannelFlow: self._receive_ChannelFlow,
+            protocol.ChannelFlowOK: self._receive_ChannelFlowOK,
 
-            methods.ExchangeDeclareOK: self.receive_ExchangeDeclareOK,
-            methods.ExchangeBindOK: self.receive_ExchangeBindOK,
-            methods.ExchangeUnbindOK: self.receive_ExchangeUnbindOK,
-            methods.ExchangeDeleteOK: self.receive_ExchangeDeleteOK,
+            protocol.ExchangeDeclareOK: self._receive_ExchangeDeclareOK,
+            protocol.ExchangeBindOK: self._receive_ExchangeBindOK,
+            protocol.ExchangeUnbindOK: self._receive_ExchangeUnbindOK,
+            protocol.ExchangeDeleteOK: self._receive_ExchangeDeleteOK,
 
-            methods.QueueDeclareOK: self.receive_QueueDeclareOK,
-            methods.QueueBindOK: self.receive_QueueBindOK,
-            methods.QueueUnbindOK: self.receive_QueueUnbindOK,
-            methods.QueuePurgeOK: self.receive_QueuePurgeOK,
-            methods.QueueDeleteOK: self.receive_QueueDeleteOK,
+            protocol.QueueDeclareOK: self._receive_QueueDeclareOK,
+            protocol.QueueBindOK: self._receive_QueueBindOK,
+            protocol.QueueUnbindOK: self._receive_QueueUnbindOK,
+            protocol.QueuePurgeOK: self._receive_QueuePurgeOK,
+            protocol.QueueDeleteOK: self._receive_QueueDeleteOK,
 
-            methods.BasicConsumeOK: self.receive_BasicConsumeOK,
-            methods.BasicCancelOK: self.receive_BasicCancelOK,
-            methods.BasicDeliver: self.receive_BasicDeliver,
-            methods.BasicGetOK: self.receive_BasicGetOK,
-            methods.BasicGetEmpty: self.receive_BasicGetEmpty,
-            methods.BasicAck: self.receive_BasicAck,
-            methods.BasicNack: self.receive_BasicNack,
-            methods.BasicQosOK: self.receive_BasicQosOK,
-            methods.BasicRecoverOK: self.receive_BasicRecoverOK,
-            methods.BasicReturn: self.receive_BasicReturn,
+            protocol.BasicConsumeOK: self._receive_BasicConsumeOK,
+            protocol.BasicCancelOK: self._receive_BasicCancelOK,
+            protocol.BasicDeliver: self._receive_BasicDeliver,
+            protocol.BasicGetOK: self._receive_BasicGetOK,
+            protocol.BasicGetEmpty: self._receive_BasicGetEmpty,
+            protocol.BasicAck: self._receive_BasicAck,
+            protocol.BasicNack: self._receive_BasicNack,
+            protocol.BasicQosOK: self._receive_BasicQosOK,
+            protocol.BasicRecoverOK: self._receive_BasicRecoverOK,
+            protocol.BasicReturn: self._receive_BasicReturn,
 
-            methods.ConfirmSelectOK: self.receive_ConfirmSelectOK,
+            protocol.ConfirmSelectOK: self._receive_ConfirmSelectOK,
 
-            methods.TxSelectOK: self.receive_TxSelectOK,
-            methods.TxCommitOK: self.receive_TxCommitOK,
-            methods.TxRollbackOK: self.receive_TxRollbackOK,
+            protocol.TxSelectOK: self._receive_TxSelectOK,
+            protocol.TxCommitOK: self._receive_TxCommitOK,
+            protocol.TxRollbackOK: self._receive_TxRollbackOK,
         }
 
     def data_to_send(self):
@@ -119,11 +115,11 @@ class Channel:
         self._fsm.trigger('send_{}{}'.format(
             method.__class__.__name__, '_nowait' if no_wait else ''
         ))
-        frame = amqpframe.MethodFrame(self._channel_id, method)
+        frame = protocol.MethodFrame(self._channel_id, method)
         frame.to_bytestream(self._buffer)
 
     def handle_frame(self, frame):
-        if isinstance(frame, amqpframe.MethodFrame):
+        if isinstance(frame, protocol.MethodFrame):
             method = frame.payload
             if getattr(method, 'content', False):
                 event = 'receive_MethodFrame_content'
@@ -142,7 +138,7 @@ class Channel:
             handler = self._method_handlers[method.__class__]
             handler(frame)
 
-        elif isinstance(frame, amqpframe.ContentHeaderFrame):
+        elif isinstance(frame, protocol.ContentHeaderFrame):
             logger.debug(
                 'Receiving ContentHeaderFrame [channel_id:%s]',
                 self._channel_id
@@ -154,7 +150,7 @@ class Channel:
             if self._message.body_size == 0:
                 self._process_message()
 
-        elif isinstance(frame, amqpframe.ContentBodyFrame):
+        elif isinstance(frame, protocol.ContentBodyFrame):
             logger.debug(
                 'Receiving ContentBodyFrame [channel_id:%s]',
                 self._channel_id
@@ -166,14 +162,14 @@ class Channel:
                 # Message is received completely
                 self._process_message()
 
-    def send_ContentHeaderFrame(self, payload):
+    def _send_ContentHeaderFrame(self, payload):
         self._framing_fsm.trigger('send_ContentHeaderFrame')
-        frame = amqpframe.ContentHeaderFrame(self._channel_id, payload)
+        frame = protocol.ContentHeaderFrame(self._channel_id, payload)
         frame.to_bytestream(self._buffer)
 
-    def send_ContentBodyFrame(self, payload):
+    def _send_ContentBodyFrame(self, payload):
         self._framing_fsm.trigger('send_ContentBodyFrame')
-        frame = amqpframe.ContentBodyFrame(self._channel_id, payload)
+        frame = protocol.ContentBodyFrame(self._channel_id, payload)
         frame.to_bytestream(self._buffer)
 
     def _process_message(self):
@@ -186,36 +182,35 @@ class Channel:
         else:
             consumer_tag = message.delivery_info.consumer_tag
             message_fut = self._consumers[consumer_tag]
-            fut = self._consumers[consumer_tag] = Future()
+            fut = self._consumers[consumer_tag] = self.Future()
             message_fut.set_result((message, fut))
 
-    def send_ChannelOpen(self):
-        method = amqpframe.methods.ChannelOpen()
+    def open(self):
+        method = protocol.ChannelOpen()
         self._send_method(method)
         return self._fut
 
-    def receive_ChannelOpenOK(self, frame):
+    def _receive_ChannelOpenOK(self, frame):
         self.alive = True
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_ChannelClose(self, reply_code, reply_text,
-                          class_id=0, method_id=0):
-        method = amqpframe.methods.ChannelClose(
+    def close(self, reply_code, reply_text, class_id=0, method_id=0):
+        method = protocol.ChannelClose(
             reply_code=reply_code, reply_text=reply_text,
             class_id=class_id, method_id=method_id,
         )
         self._send_method(method)
         return self._fut
 
-    def receive_ChannelCloseOK(self, frame):
+    def _receive_ChannelCloseOK(self, frame):
         self.alive = False
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def receive_ChannelClose(self, frame):
+    def _receive_ChannelClose(self, frame):
         method = frame.payload
-        AMQPError = errors.ERRORS_BY_CODE[method.reply_code]
+        AMQPError = protocol.ERRORS_BY_CODE[method.reply_code]
         exc = AMQPError(
             method.reply_text,
             method.class_id,
@@ -225,34 +220,34 @@ class Channel:
 
     def send_ChannelCloseOK(self, _exc):
         self.alive = False
-        method = amqpframe.methods.ChannelCloseOK()
+        method = protocol.ChannelCloseOK()
         self._send_method(method)
         raise _exc
 
-    def send_ChannelFlow(self, active):
-        method = amqpframe.methods.ChannelFlow(active=active)
+    def flow(self, active):
+        method = protocol.ChannelFlow(active=active)
         self._send_method(method)
         return self._fut
 
-    def receive_ChannelFlowOK(self, frame):
+    def _receive_ChannelFlowOK(self, frame):
         self._fut.set_result(frame.payload.active)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def receive_ChannelFlow(self, frame):
+    def _receive_ChannelFlow(self, frame):
         self.active = frame.payload.active
         self.send_ChannelFlowOK(active=self.active)
         self._fut.set_result(self.active)
-        self._fut = Future()
+        self._fut = self.Future()
 
     def send_ChannelFlowOK(self, active):
-        method = amqpframe.methods.ChannelFlowOK(active=active)
+        method = protocol.ChannelFlowOK(active=active)
         self._send_method(method)
         return self._fut
 
-    def send_ExchangeDeclare(self, exchange, type='direct', passive=False,
-                             durable=False, auto_delete=True, internal=False,
-                             no_wait=False, arguments=None):
-        method = amqpframe.methods.ExchangeDeclare(
+    def exchange_declare(self, exchange, type='direct', passive=False,
+                         durable=False, auto_delete=True, internal=False,
+                         no_wait=False, arguments=None):
+        method = protocol.ExchangeDeclare(
             exchange=exchange, type=type, passive=passive, durable=durable,
             auto_delete=auto_delete, internal=internal, no_wait=no_wait,
             arguments=arguments
@@ -261,25 +256,25 @@ class Channel:
         if not no_wait:
             return self._fut
 
-    def receive_ExchangeDeclareOK(self, frame):
+    def _receive_ExchangeDeclareOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_ExchangeDelete(self, exchange, if_unused=False, no_wait=False):
-        method = amqpframe.methods.ExchangeDelete(
+    def exchange_delete(self, exchange, if_unused=False, no_wait=False):
+        method = protocol.ExchangeDelete(
             exchange=exchange, if_unused=if_unused, no_wait=no_wait
         )
         self._send_method(method)
         if not no_wait:
             return self._fut
 
-    def receive_ExchangeDeleteOK(self, frame):
+    def _receive_ExchangeDeleteOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_ExchangeBind(self, destination, source='', routing_key='',
-                          no_wait=False, arguments=None):
-        method = amqpframe.methods.ExchangeBind(
+    def exchange_bind(self, destination, source='', routing_key='',
+                      no_wait=False, arguments=None):
+        method = protocol.ExchangeBind(
             destination=destination, source=source, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
@@ -287,13 +282,13 @@ class Channel:
         if not no_wait:
             return self._fut
 
-    def receive_ExchangeBindOK(self, frame):
+    def _receive_ExchangeBindOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_ExchangeUnbind(self, destination, source='', routing_key='',
-                            no_wait=False, arguments=None):
-        method = amqpframe.methods.ExchangeUnbind(
+    def exchange_unbind(self, destination, source='', routing_key='',
+                        no_wait=False, arguments=None):
+        method = protocol.ExchangeUnbind(
             destination=destination, source=source, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
@@ -301,14 +296,14 @@ class Channel:
         if not no_wait:
             return self._fut
 
-    def receive_ExchangeUnbindOK(self, frame):
+    def _receive_ExchangeUnbindOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_QueueDeclare(self, queue='', passive=False, durable=False,
-                          exclusive=False, auto_delete=True,
-                          no_wait=False, arguments=None):
-        method = amqpframe.methods.QueueDeclare(
+    def queue_declare(self, queue='', passive=False, durable=False,
+                      exclusive=False, auto_delete=True,
+                      no_wait=False, arguments=None):
+        method = protocol.QueueDeclare(
             queue=queue, passive=passive, durable=durable,
             exclusive=exclusive, auto_delete=auto_delete,
             no_wait=no_wait, arguments=arguments,
@@ -317,16 +312,16 @@ class Channel:
         if not no_wait:
             return self._fut
 
-    def receive_QueueDeclareOK(self, frame):
+    def _receive_QueueDeclareOK(self, frame):
         method = frame.payload
         self._fut.set_result((
             method.queue, method.message_count, method.consumer_count
         ))
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_QueueBind(self, queue, exchange='', routing_key='',
-                       no_wait=False, arguments=None):
-        method = amqpframe.methods.QueueBind(
+    def queue_bind(self, queue, exchange='', routing_key='',
+                   no_wait=False, arguments=None):
+        method = protocol.QueueBind(
             queue=queue, exchange=exchange, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
@@ -334,36 +329,35 @@ class Channel:
         if not no_wait:
             return self._fut
 
-    def receive_QueueBindOK(self, frame):
+    def _receive_QueueBindOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_QueueUnbind(self, queue, exchange='', routing_key='',
-                         arguments=None):
-        method = amqpframe.methods.QueueUnbind(
+    def queue_unbind(self, queue, exchange='', routing_key='', arguments=None):
+        method = protocol.QueueUnbind(
             queue=queue, exchange=exchange, routing_key=routing_key,
             arguments=arguments,
         )
         self._send_method(method)
         return self._fut
 
-    def receive_QueueUnbindOK(self, frame):
+    def _receive_QueueUnbindOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_QueuePurge(self, queue, no_wait=False):
-        method = amqpframe.methods.QueuePurge(queue=queue, no_wait=no_wait)
+    def queue_purge(self, queue, no_wait=False):
+        method = protocol.QueuePurge(queue=queue, no_wait=no_wait)
         self._send_method(method)
         if not no_wait:
             return self._fut
 
-    def receive_QueuePurgeOK(self, frame):
+    def _receive_QueuePurgeOK(self, frame):
         self._fut.set_result(frame.payload.message_count)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_QueueDelete(self, queue, if_unused=False, if_empty=False,
-                         no_wait=False):
-        method = amqpframe.methods.QueueDelete(
+    def queue_delete(self, queue, if_unused=False, if_empty=False,
+                     no_wait=False):
+        method = protocol.QueueDelete(
             queue=queue, if_unused=if_unused, if_empty=if_empty,
             no_wait=no_wait,
         )
@@ -371,26 +365,27 @@ class Channel:
         if not no_wait:
             return self._fut
 
-    def receive_QueueDeleteOK(self, frame):
+    def _receive_QueueDeleteOK(self, frame):
         self._fut.set_result(frame.payload.message_count)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_BasicQos(self, prefetch_size, prefetch_count, global_):
-        method = amqpframe.methods.BasicQos(
+    def basic_qos(self, prefetch_size, prefetch_count, global_):
+        method = protocol.BasicQos(
             prefetch_size=prefetch_size, prefetch_count=prefetch_count,
             global_=global_,
         )
         self._send_method(method)
         return self._fut
 
-    def receive_BasicQosOK(self, frame):
+    def _receive_BasicQosOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_BasicConsume(self, queue='', consumer_tag='',
-                          no_local=False, no_ack=False, exclusive=False,
-                          no_wait=False, arguments=None):
-        method = amqpframe.methods.BasicConsume(
+    def basic_consume(self, queue='', consumer_tag='',
+                      no_local=False, no_ack=False, exclusive=False,
+                      no_wait=False, arguments=None):
+        assert consumer_tag or not no_wait, 'consumer_tag must be specified'
+        method = protocol.BasicConsume(
             queue=queue, consumer_tag=consumer_tag, no_local=no_local,
             no_ack=no_ack, exclusive=exclusive, no_wait=no_wait,
             arguments=arguments,
@@ -400,17 +395,17 @@ class Channel:
         if not no_wait:
             return self._fut
 
-        fut = self._consumers[method.consumer_tag] = Future()
+        fut = self._consumers[method.consumer_tag] = self.Future()
         return fut
 
-    def receive_BasicConsumeOK(self, frame):
+    def _receive_BasicConsumeOK(self, frame):
         consumer_tag = frame.payload.consumer_tag
-        fut = self._consumers[consumer_tag] = Future()
+        fut = self._consumers[consumer_tag] = self.Future()
         self._fut.set_result(fut)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_BasicCancel(self, consumer_tag, no_wait=False):
-        method = amqpframe.methods.BasicCancel(
+    def basic_cancel(self, consumer_tag, no_wait=False):
+        method = protocol.BasicCancel(
             consumer_tag=consumer_tag, no_wait=no_wait
         )
         self._send_method(method)
@@ -419,36 +414,36 @@ class Channel:
         else:
             del self._consumers[method.consumer_tag]
 
-    def receive_BasicCancelOK(self, frame):
+    def _receive_BasicCancelOK(self, frame):
         consumer_tag = frame.payload.consumer_tag
         del self._consumers[consumer_tag]
         self._fut.set_result(consumer_tag)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_BasicPublish(self, message, exchange='', routing_key='',
-                          mandatory=False, immediate=False):
+    def basic_publish(self, message, exchange='', routing_key='',
+                      mandatory=False, immediate=False):
         if self._next_publish_seq_no > 0:
             self._unconfirmed_set.add(self._next_publish_seq_no)
             self._next_publish_seq_no += 1
-        method = amqpframe.methods.BasicPublish(
+        method = protocol.BasicPublish(
             exchange=exchange, routing_key=routing_key,
             mandatory=mandatory, immediate=immediate,
         )
         self._send_method(method)
 
-        header_payload = amqpframe.ContentHeaderPayload(
+        header_payload = protocol.ContentHeaderPayload(
             class_id=method.method_type[0],
             body_size=message.body_size,
             properties=message.properties,
         )
-        self.send_ContentHeaderFrame(header_payload)
+        self._send_ContentHeaderFrame(header_payload)
 
-        max_payload_size = self._frame_max - amqpframe.Frame.METADATA_SIZE
+        max_payload_size = self._frame_max - protocol.Frame.METADATA_SIZE
         for chunk in _chunked(message.body, max_payload_size):
-            body_payload = amqpframe.ContentBodyPayload(chunk)
-            self.send_ContentBodyFrame(body_payload)
+            body_payload = protocol.ContentBodyPayload(chunk)
+            self._send_ContentBodyFrame(body_payload)
 
-    def receive_BasicReturn(self, frame):
+    def _receive_BasicReturn(self, frame):
         # RabbitMQ does not support BasicPublish with immediate=True
         # http://www.rabbitmq.com/blog/2012/11/19/breaking-things-with-rabbitmq-3-0/
         # If you *really* *really* need to handle this case with an other
@@ -456,46 +451,46 @@ class Channel:
         # and write this logic by yourself.
         raise NotImplementedError
 
-    def receive_BasicDeliver(self, frame):
+    def _receive_BasicDeliver(self, frame):
         consumer_tag = frame.payload.consumer_tag
         if consumer_tag not in self._consumers:
             class_id, method_id = frame.payload.method_type
-            raise errors.CommandInvalid(
+            raise protocol.CommandInvalid(
                 'server has delivered a message to consumer with tag {}'
                 'but there is no such consumer'.format(consumer_tag),
                 class_id, method_id
             )
-        self._message = amqpframe.basic.Message(delivery_info=frame.payload)
+        self._message = protocol.basic.Message(delivery_info=frame.payload)
 
-    def send_BasicGet(self, queue, no_ack=False):
-        method = amqpframe.methods.BasicGet(queue=queue, no_ack=no_ack)
+    def basic_get(self, queue, no_ack=False):
+        method = protocol.BasicGet(queue=queue, no_ack=no_ack)
         self._send_method(method)
         return self._fut
 
-    def receive_BasicGetOK(self, frame):
+    def _receive_BasicGetOK(self, frame):
         method = frame.payload
-        self._message = amqpframe.basic.Message(delivery_info={
+        self._message = protocol.basic.Message(delivery_info={
             'delivery_tag': method.delivery_tag,
             'redelivered': method.redelivered,
             'exchange': method.exchange,
             'routing_key': method.routing_key,
             'message_count': method.message_count,
         })
-        self._message_fut = Future()
+        self._message_fut = self.Future()
         self._fut.set_result(self._message_fut)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def receive_BasicGetEmpty(self, frame):
+    def _receive_BasicGetEmpty(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_BasicAck(self, delivery_tag='', multiple=False):
-        method = amqpframe.methods.BasicAck(
+    def basic_ack(self, delivery_tag='', multiple=False):
+        method = protocol.BasicAck(
             delivery_tag=delivery_tag, multiple=multiple
         )
         self._send_method(method)
 
-    def receive_BasicAck(self, frame):
+    def _receive_BasicAck(self, frame):
         delivery_tag = frame.payload.delivery_tag
         multiple = frame.payload.multiple
         if multiple:
@@ -505,36 +500,36 @@ class Channel:
         else:
             self._unconfirmed_set.remove(delivery_tag)
 
-        new_ack_fut = Future()
+        new_ack_fut = self.Future()
         self._ack_fut.set_result(new_ack_fut)
         self._ack_fut = new_ack_fut
 
-    def send_BasicReject(self, delivery_tag='', requeue=False):
-        method = amqpframe.Methods.BasicReject(
+    def basic_reject(self, delivery_tag='', requeue=False):
+        method = protocol.BasicReject(
             delivery_tag=delivery_tag, requeue=requeue,
         )
         self._send_method(method)
 
-    def send_BasicRecoverAsync(self, requeue=False):
-        method = amqpframe.methods.BasicRecoverAsync(requeue=requeue)
+    def basic_recover_async(self, requeue=False):
+        method = protocol.BasicRecoverAsync(requeue=requeue)
         self._send_method(method)
 
-    def send_BasicRecover(self, requeue=False):
-        method = amqpframe.methods.BasicRecover(requeue=requeue)
+    def basic_recover(self, requeue=False):
+        method = protocol.BasicRecover(requeue=requeue)
         self._send_method(method)
         return self._fut
 
-    def receive_BasicRecoverOK(self, frame):
+    def _receive_BasicRecoverOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_BasicNack(self, delivery_tag='', multiple=False, requeue=False):
-        method = amqpframe.methods.BasicNack(
+    def basic_nack(self, delivery_tag='', multiple=False, requeue=False):
+        method = protocol.BasicNack(
             delivery_tag=delivery_tag, multiple=multiple, requeue=requeue
         )
         self._send_method(method)
 
-    def receive_BasicNack(self, frame):
+    def _receive_BasicNack(self, frame):
         delivery_tag = frame.payload.delivery_tag
         multiple = frame.payload.multiple
         if multiple:
@@ -544,39 +539,39 @@ class Channel:
         else:
             self._unconfirmed_set.remove(delivery_tag)
 
-        new_nack_fut = Future()
+        new_nack_fut = self.Future()
         self._nack_fut.set_result(new_nack_fut)
         self._nack_fut = new_nack_fut
 
-    def send_TxSelect(self):
-        method = amqpframe.methods.TxSelect()
+    def tx_select(self):
+        method = protocol.TxSelect()
         self._send_method(method)
         return self._fut
 
-    def receive_TxSelectOK(self, frame):
+    def _receive_TxSelectOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_TxCommit(self):
-        method = amqpframe.methods.TxCommit()
+    def tx_commit(self):
+        method = protocol.TxCommit()
         self._send_method(method)
         return self._fut
 
-    def receive_TxCommitOK(self, frame):
+    def _receive_TxCommitOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_TxRollback(self):
-        method = amqpframe.methods.TxRollback()
+    def tx_rollback(self):
+        method = protocol.TxRollback()
         self._send_method(method)
         return self._fut
 
-    def receive_TxRollbackOK(self, frame):
+    def _receive_TxRollbackOK(self, frame):
         self._fut.set_result(None)
-        self._fut = Future()
+        self._fut = self.Future()
 
-    def send_ConfirmSelect(self, no_wait=False):
-        method = amqpframe.methods.ConfirmSelect(nowait=no_wait)
+    def confirm_select(self, no_wait=False):
+        method = protocol.ConfirmSelect(nowait=no_wait)
         self._send_method(method)
         if not no_wait:
             return self._fut
@@ -584,16 +579,17 @@ class Channel:
             self._next_publish_seq_no = 1
         return self._ack_fut, self._nack_fut
 
-    def receive_ConfirmSelectOK(self, frame):
+    def _receive_ConfirmSelectOK(self, frame):
         if self._next_publish_seq_no == 0:
             self._next_publish_seq_no = 1
         self._fut.set_result((self._ack_fut, self._nack_fut))
-        self._fut = Future()
+        self._fut = self.Future()
 
 
 class ChannelsManager(collections.abc.Mapping):
 
-    def __init__(self, channel_max, frame_max):
+    def __init__(self, channel_max, frame_max, channel_cls):
+        self.channel_cls = channel_cls
         self.channel_max = channel_max
         self.frame_max = frame_max
         self._next_channel_id = 1
@@ -603,17 +599,17 @@ class ChannelsManager(collections.abc.Mapping):
         if channel_id is None:
             channel_id = self._next_channel_id
             if channel_id > self.channel_max:
-                raise errors.HardError(
+                raise protocol.HardError(
                     "can't create a channel, channel_max ({}) "
                     "is reached".format(self.channel_max)
                 )
             self._next_channel_id += 1
-            channel = Channel(channel_id, self.frame_max)
+            channel = self.channel_cls(channel_id, self.frame_max)
             self._channels[channel_id] = channel
         else:
             channel = self._channels.get(channel_id, None)
             if channel is None:
-                channel = Channel(channel_id, self.frame_max)
+                channel = self.channel_cls(channel_id, self.frame_max)
                 self._channels[channel_id] = channel
         return channel
 

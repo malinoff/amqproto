@@ -2,10 +2,7 @@ import io
 
 import pytest
 
-import amqpframe
-import amqpframe.methods
-
-import amqproto.errors
+from amqproto import protocol
 from amqproto.auth import Auth, PLAIN
 from amqproto.connection import Connection
 
@@ -20,8 +17,8 @@ def test_correct_connection_initiation():
     conn.initiate_connection()
 
     frame_bytes = io.BytesIO()
-    payload = amqpframe.ProtocolHeaderPayload(12, 34, 56)
-    frame = amqpframe.ProtocolHeaderFrame(conn._channel_id, payload)
+    payload = protocol.ProtocolHeaderPayload(12, 34, 56)
+    frame = protocol.ProtocolHeaderFrame(conn._channel_id, payload)
     frame.to_bytestream(frame_bytes)
 
     assert frame_bytes.getvalue() in conn.data_to_send()
@@ -31,10 +28,10 @@ def test_incorrect_connection_initiation():
     conn = Connection()
     conn.initiate_connection()
 
-    payload = amqpframe.ProtocolHeaderPayload(1, 0, 0)
-    frame = amqpframe.ProtocolHeaderFrame(conn._channel_id, payload)
+    payload = protocol.ProtocolHeaderPayload(1, 0, 0)
+    frame = protocol.ProtocolHeaderFrame(conn._channel_id, payload)
 
-    with pytest.raises(amqproto.errors.HardError):
+    with pytest.raises(protocol.HardError):
         conn.handle_frame(frame)
 
 
@@ -42,14 +39,14 @@ def test_correct_ConnectionStart_handling():
     conn = Connection()
     conn.initiate_connection()
 
-    payload = amqpframe.methods.ConnectionStart(
+    payload = protocol.ConnectionStart(
         version_major=0,
         version_minor=9,
         server_properties={'foo': 'bar'},
         mechanisms=b'PLAIN AMQPLAIN',
         locales=b'en_US ru_RU',
     )
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
@@ -73,7 +70,7 @@ def test_correct_ConnectionStart_handling():
     mechanism = conn._handshake_properties['chosen']['mechanism']
     locale = conn._handshake_properties['chosen']['locale']
 
-    method = amqpframe.methods.ConnectionStartOK(
+    method = protocol.ConnectionStartOK(
         client_properties=client_properties,
         mechanism=mechanism,
         response=response,
@@ -133,10 +130,10 @@ def test_incorrect_ConnectionStart_handling(arguments):
     conn = Connection(locale=b'ru_RU')
     conn.initiate_connection()
 
-    payload = amqpframe.methods.ConnectionStart(**arguments)
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    payload = protocol.ConnectionStart(**arguments)
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
-    with pytest.raises(amqproto.errors.HardError):
+    with pytest.raises(protocol.HardError):
         conn.handle_frame(frame)
 
 
@@ -199,19 +196,19 @@ def test_ConnectionTune_handling(properties):
     conn = Connection(**properties['client'])
     conn.initiate_connection()
 
-    payload = amqpframe.methods.ConnectionStart(
+    payload = protocol.ConnectionStart(
         version_major=0,
         version_minor=9,
         server_properties={'foo': 'bar'},
         mechanisms=b'PLAIN AMQPLAIN',
         locales=b'en_US ru_RU',
     )
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
-    payload = amqpframe.methods.ConnectionTune(**properties['server'])
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    payload = protocol.ConnectionTune(**properties['server'])
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
@@ -223,7 +220,7 @@ def test_ConnectionTune_handling(properties):
 
     # Make sure ConnectionTuneOK is sent
     stream = io.BytesIO()
-    method = amqpframe.methods.ConnectionTuneOK(**conn.properties)
+    method = protocol.ConnectionTuneOK(**conn.properties)
     method.to_bytestream(stream)
     method_bytes = stream.getvalue()
 
@@ -231,7 +228,7 @@ def test_ConnectionTune_handling(properties):
 
     # Make sure ConnectionOpen is also sent
     stream = io.BytesIO()
-    method = amqpframe.methods.ConnectionOpen(virtual_host='/')
+    method = protocol.ConnectionOpen(virtual_host='/')
     method.to_bytestream(stream)
     method_bytes = stream.getvalue()
 
@@ -242,31 +239,31 @@ def test_ConnectionOpenOK_handling():
     conn = Connection()
     fut = conn.initiate_connection()
 
-    payload = amqpframe.methods.ConnectionStart(
+    payload = protocol.ConnectionStart(
         version_major=0,
         version_minor=9,
         server_properties={'foo': 'bar'},
         mechanisms=b'PLAIN AMQPLAIN',
         locales=b'en_US ru_RU',
     )
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
     channel_max = 10
     frame_max = 131072
     heartbeat = 100
-    payload = amqpframe.methods.ConnectionTune(
+    payload = protocol.ConnectionTune(
         channel_max=channel_max,
         frame_max=frame_max,
         heartbeat=heartbeat,
     )
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
-    payload = amqpframe.methods.ConnectionOpenOK()
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    payload = protocol.ConnectionOpenOK()
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
@@ -275,16 +272,16 @@ def test_ConnectionOpenOK_handling():
 
 
 def test_correct_ConnectionClose_sending(ready_connection):
-    fut = ready_connection.send_ConnectionClose(15, b'foo', 0, 0)
+    fut = ready_connection.close(15, b'foo', 0, 0)
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ConnectionClose(
+    method = protocol.ConnectionClose(
         reply_code=15, reply_text=b'foo', class_id=0, method_id=0
     )
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_connection.data_to_send()
 
-    method = amqpframe.methods.ConnectionCloseOK()
-    frame = amqpframe.MethodFrame(ready_connection._channel_id, method)
+    method = protocol.ConnectionCloseOK()
+    frame = protocol.MethodFrame(ready_connection._channel_id, method)
     ready_connection.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
@@ -292,16 +289,16 @@ def test_correct_ConnectionClose_sending(ready_connection):
 
 
 def test_correct_ConnectionClose_handling(ready_connection):
-    method = amqpframe.methods.ConnectionClose(
+    method = protocol.ConnectionClose(
         reply_code=501, reply_text=b'foo', class_id=100, method_id=200
     )
-    frame = amqpframe.MethodFrame(ready_connection._channel_id, method)
+    frame = protocol.MethodFrame(ready_connection._channel_id, method)
 
-    with pytest.raises(amqproto.errors.AMQPError) as excinfo:
+    with pytest.raises(protocol.AMQPError) as excinfo:
         ready_connection.handle_frame(frame)
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ConnectionCloseOK()
+    method = protocol.ConnectionCloseOK()
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_connection.data_to_send()
 
@@ -313,20 +310,20 @@ def test_correct_ConnectionClose_handling(ready_connection):
     assert exc.class_id == 100
     assert exc.method_id == 200
 
-    assert isinstance(exc, amqproto.errors.ERRORS_BY_CODE[501])
+    assert isinstance(exc, protocol.ERRORS_BY_CODE[501])
 
 
 def test_can_receive_valid_frame(ready_connection):
     stream = io.BytesIO()
 
     expected_frames = []
-    payload = amqpframe.methods.ChannelOpenOK()
-    frame = amqpframe.MethodFrame(1, payload)
+    payload = protocol.ChannelOpenOK()
+    frame = protocol.MethodFrame(1, payload)
     frame.to_bytestream(stream)
     expected_frames.append(frame)
 
-    payload = amqpframe.methods.ChannelOpenOK()
-    frame = amqpframe.MethodFrame(1, payload)
+    payload = protocol.ChannelOpenOK()
+    frame = protocol.MethodFrame(1, payload)
     frame.to_bytestream(stream)
     expected_frames.append(frame)
 
@@ -338,27 +335,27 @@ def test_can_receive_valid_frame(ready_connection):
 
 def test_receive_frame_too_big(ready_connection):
     stream = io.BytesIO()
-    payload = amqpframe.ContentBodyPayload(b'a' * 10000)
-    frame = amqpframe.ContentBodyFrame(1, payload)
+    payload = protocol.ContentBodyPayload(b'a' * 10000)
+    frame = protocol.ContentBodyFrame(1, payload)
     frame.to_bytestream(stream)
     data = stream.getvalue()
 
-    with pytest.raises(amqproto.errors.FrameError):
+    with pytest.raises(protocol.FrameError):
         list(ready_connection.receive_frames(data))
 
     stream = io.BytesIO()
-    payload = amqpframe.methods.ConnectionStart(
+    payload = protocol.ConnectionStart(
         version_major=0,
         version_minor=9,
         server_properties={k: k for k in range(100)},
         mechanisms='PLAIN ' * 100,
         locales='en_EN ' * 100,
     )
-    frame = amqpframe.MethodFrame(1, payload)
+    frame = protocol.MethodFrame(1, payload)
     frame.to_bytestream(stream)
     data = stream.getvalue()
 
-    with pytest.raises(amqproto.errors.FrameError):
+    with pytest.raises(protocol.FrameError):
         list(ready_connection.receive_frames(data))
 
 
@@ -385,26 +382,26 @@ def test_ConnectionSecure_handling():
     conn = Connection(auth=CustomAuth(b'foo', b'bar'))
     conn.initiate_connection()
 
-    payload = amqpframe.methods.ConnectionStart(
+    payload = protocol.ConnectionStart(
         version_major=0,
         version_minor=9,
         server_properties={'foo': 'bar'},
         mechanisms=b'PLAIN CUSTOMAUTH',
         locales=b'en_US ru_RU',
     )
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
-    payload = amqpframe.methods.ConnectionSecure(
+    payload = protocol.ConnectionSecure(
         challenge=b'123'
     )
-    frame = amqpframe.MethodFrame(conn._channel_id, payload)
+    frame = protocol.MethodFrame(conn._channel_id, payload)
 
     conn.handle_frame(frame)
 
     method_bytes = io.BytesIO()
-    method = amqpframe.methods.ConnectionSecureOK(response=b'246')
+    method = protocol.ConnectionSecureOK(response=b'246')
     method.to_bytestream(method_bytes)
 
     assert method_bytes.getvalue() in conn.data_to_send()
