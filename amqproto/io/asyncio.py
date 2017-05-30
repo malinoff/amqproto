@@ -34,8 +34,8 @@ class Channel(SansioChannel):
             reply_text = exc.reply_text
         await self.close(reply_code, reply_text)
 
-    def _send_method(self, *args, **kwargs):
-        super()._send_method(*args, **kwargs)
+    def _send_frame(self, *args, **kwargs):
+        super()._send_frame(*args, **kwargs)
         self.writer.write(self.data_to_send())
 
     async def basic_consume(self, *args, **kwargs):
@@ -57,6 +57,10 @@ class Channel(SansioChannel):
             # from the same queue again.
             self._waiters.add(future)
             yield message
+
+    async def wait_for_confirms(self):
+        while self._unconfirmed_set:
+            await asyncio.sleep(1, loop=self.loop)
 
 
 class Connection(SansioConnection):
@@ -86,13 +90,16 @@ class Connection(SansioConnection):
         return Channel(*args, loop=self.loop, writer=self.writer, **kwargs)
 
     async def _communicate(self):
-        data = b''
+        data = bytearray()
         reader, writer = self.reader, self.writer
         while self.alive:
             writer.write(self.data_to_send())
             await writer.drain()
             frame_max = self.properties['frame_max']
-            data += await reader.read(10 * frame_max)
+            chunk = await reader.read(10 * frame_max)
+            if not chunk:
+                break
+            data += chunk
             frames = self.receive_frames(data)
             for frame in frames:
                 self.handle_frame(frame)

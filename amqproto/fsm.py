@@ -482,6 +482,11 @@ class ChannelFraming:
           source='received_MethodFrame',
           dest='channel_idle'),
 
+        # Sometimes server sends multiple methods at once
+        T(event='receive_MethodFrame',
+          source='received_MethodFrame',
+          dest='received_MethodFrame'),
+
         T(event='send_MethodFrame_content',
           source='channel_idle',
           dest='sent_MethodFrame_content'),
@@ -532,11 +537,6 @@ class ChannelFraming:
           source='sent_ContentHeaderFrame',
           dest='sent_ContentHeaderFrame'),
 
-        # In confirm mode, server will respond with ACK/NACK
-        T(event='receive_MethodFrame',
-          source='sent_ContentHeaderFrame',
-          dest='channel_idle'),
-
         # If a MethodFrame is sent, treat this as the end of the body.
         T(event='send_MethodFrame',
           source='sent_ContentHeaderFrame',
@@ -573,6 +573,17 @@ class ChannelFraming:
         T(event='receive_BasicMessage',
           source='.*',
           dest='channel_idle'),
+
+        # In confirm mode, server will respond with ACK/NACK
+        T(event='receive_MethodFrame',
+          source='sent_ContentHeaderFrame',
+          dest='channel_idle'),
+
+        # In confirm mode, server will respond with ACK
+        # and we may want to publish a message right after that
+        T(event='send_MethodFrame_content',
+          source='received_MethodFrame',
+          dest='sent_MethodFrame_content')
     ]
 
 

@@ -201,9 +201,19 @@ class Connection:
             'Sending MethodFrame %s [channel_id:%s]',
             method.__class__.__name__, self._channel_id
         )
-        self._heartbeater.update_sent_time()
         self._fsm.trigger('send_' + method.__class__.__name__)
         frame = protocol.MethodFrame(self._channel_id, method)
+        self._send_frame(frame, method=method)
+
+    def _send_frame(self, frame, method=None):
+        method_name = method.__class__.__name__ if method is not None else ' '
+        logger.debug(
+            'Sending %s%s[channel_id:%s]',
+            frame.__class__.__name__, method_name, self._channel_id
+        )
+        self._heartbeater.update_sent_time()
+        if not method:
+            self._fsm.trigger('send_' + frame.__class__.__name__)
         frame.to_bytestream(self._buffer)
 
     def initiate_connection(self):
@@ -216,11 +226,10 @@ class Connection:
     def send_HeartbeatFrame(self):
         payload = protocol.HeartbeatPayload()
         frame = protocol.HeartbeatFrame(self._channel_id, payload)
-        frame.to_bytestream(self._buffer)
+        self._send_frame(frame)
 
     # Handshake
     def send_ProtocolHeaderFrame(self):
-        self._fsm.trigger('send_ProtocolHeaderFrame')
         payload = protocol.ProtocolHeaderPayload(
             self._protocol_major,
             self._protocol_minor,
@@ -229,7 +238,7 @@ class Connection:
         frame = protocol.ProtocolHeaderFrame(
             self._channel_id, payload=payload
         )
-        frame.to_bytestream(self._buffer)
+        self._send_frame(frame)
 
     def handle_ProtocolHeaderFrame(self,
                                    frame: protocol.ProtocolHeaderFrame):

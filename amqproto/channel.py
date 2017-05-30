@@ -51,7 +51,6 @@ class Channel:
         self._next_publish_seq_no = 0
         self._unconfirmed_set = set()
         self._ack_fut = self.Future()
-        self._nack_fut = self.Future()
 
         self.alive = True
         self.active = True
@@ -99,10 +98,6 @@ class Channel:
         return data
 
     def _send_method(self, method):
-        logger.debug(
-            'Sending MethodFrame %s [channel_id:%s]',
-            method.__class__.__name__, self._channel_id,
-        )
         no_wait = (getattr(method, 'no_wait', False) or
                    getattr(method, 'nowait', False))
         if no_wait:
@@ -116,6 +111,17 @@ class Channel:
             method.__class__.__name__, '_nowait' if no_wait else ''
         ))
         frame = protocol.MethodFrame(self._channel_id, method)
+        self._send_frame(frame, method=method)
+
+    def _send_frame(self, frame, method=None):
+        method_name = method.__class__.__name__ if method is not None else ' '
+        logger.debug(
+            'Sending %s%s[channel_id:%s]',
+            frame.__class__.__name__, method_name, self._channel_id
+        )
+        #self._heartbeater.update_sent_time()
+        if method is None:
+            self._framing_fsm.trigger('send_' + frame.__class__.__name__)
         frame.to_bytestream(self._buffer)
 
     def handle_frame(self, frame):
@@ -163,14 +169,12 @@ class Channel:
                 self._process_message()
 
     def _send_ContentHeaderFrame(self, payload):
-        self._framing_fsm.trigger('send_ContentHeaderFrame')
         frame = protocol.ContentHeaderFrame(self._channel_id, payload)
-        frame.to_bytestream(self._buffer)
+        self._send_frame(frame)
 
     def _send_ContentBodyFrame(self, payload):
-        self._framing_fsm.trigger('send_ContentBodyFrame')
         frame = protocol.ContentBodyFrame(self._channel_id, payload)
-        frame.to_bytestream(self._buffer)
+        self._send_frame(frame)
 
     def _process_message(self):
         self._framing_fsm.trigger('receive_BasicMessage')
@@ -497,14 +501,13 @@ class Channel:
         multiple = frame.payload.multiple
         if multiple:
             self._unconfirmed_set.difference_update(
-                {i for i in range(delivery_tag)}
+                set(range(delivery_tag + 1))
             )
         else:
             self._unconfirmed_set.remove(delivery_tag)
-
-        new_ack_fut = self.Future()
-        self._ack_fut.set_result(new_ack_fut)
-        self._ack_fut = new_ack_fut
+        if not self._unconfirmed_set:
+            self._ack_fut.set_result(True)
+            self._ack_fut = self.Future()
 
     def basic_reject(self, delivery_tag='', requeue=False):
         method = protocol.BasicReject(
@@ -532,18 +535,7 @@ class Channel:
         self._send_method(method)
 
     def _receive_BasicNack(self, frame):
-        delivery_tag = frame.payload.delivery_tag
-        multiple = frame.payload.multiple
-        if multiple:
-            self._unconfirmed_set.difference_update(
-                {i for i in range(delivery_tag)}
-            )
-        else:
-            self._unconfirmed_set.remove(delivery_tag)
-
-        new_nack_fut = self.Future()
-        self._nack_fut.set_result(new_nack_fut)
-        self._nack_fut = new_nack_fut
+        raise NotImplementedError
 
     def tx_select(self):
         method = protocol.TxSelect()
@@ -579,12 +571,11 @@ class Channel:
             return self._fut
         if self._next_publish_seq_no == 0:
             self._next_publish_seq_no = 1
-        return self._ack_fut, self._nack_fut
 
     def _receive_ConfirmSelectOK(self, frame):
         if self._next_publish_seq_no == 0:
             self._next_publish_seq_no = 1
-        self._fut.set_result((self._ack_fut, self._nack_fut))
+        self._fut.set_result(None)
         self._fut = self.Future()
 
 
