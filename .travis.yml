@@ -1,0 +1,17 @@
+language: python
+python:
+- "3.6"
+- "3.6-dev"
+- "3.7-dev"
+- "nightly"
+cache: pip
+
+install:
+- pip install -r requirements/test.txt
+- pip install .
+
+script:
+- pytest -l --cov=amqproto --cov-report=term-missing:skip-covered tests/
+
+services:
+- rabbitmq  # required by functional tests
