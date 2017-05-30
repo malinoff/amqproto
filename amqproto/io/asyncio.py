@@ -1,4 +1,5 @@
 import asyncio
+from asyncio.streams import _DEFAULT_LIMIT
 
 from amqproto import protocol
 from amqproto.channel import Channel as SansioChannel
@@ -15,6 +16,8 @@ class Channel(SansioChannel):
         self.writer = writer
         # Late call because we need self.Future available.
         super().__init__(*args, **kwargs)
+
+        self._waiters = set()
 
     def Future(self):
         return self.loop.create_future()
@@ -36,16 +39,30 @@ class Channel(SansioChannel):
         self.writer.write(self.data_to_send())
 
     async def basic_consume(self, *args, **kwargs):
-        future = await super().basic_consume(*args, **kwargs)
-        while self.alive:
-            message, future = await future
+        future, consumer_tag = await super().basic_consume(*args, **kwargs)
+        self._waiters.add(future)
+        return consumer_tag
+
+    async def receive_messages(self):
+        while self._consumers:
+            done, self._waiters = await asyncio.wait(
+                self._waiters, loop=self.loop,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            # done should have a single element, since we're waiting
+            # for FIRST_COMPLETED.
+            message, future = await next(iter(done))
+            consumer_tag = message.delivery_info.consumer_tag
+            # Return this future to the consumers set so we can consume
+            # from the same queue again.
+            self._waiters.add(future)
             yield message
 
 
 class Connection(SansioConnection):
 
     def __init__(self, host='localhost', port=5672, *,
-                 limit=None, ssl=None, family=0, proto=0,
+                 limit=_DEFAULT_LIMIT, ssl=None, family=0, proto=0,
                  flags=0, sock=None, local_addr=None, server_hostname=None,
                  loop: asyncio.BaseEventLoop, **kwargs):
         self.loop = loop
@@ -55,7 +72,7 @@ class Connection(SansioConnection):
         async def open_connection():
             self.reader, self.writer = await asyncio.open_connection(
                 host=host, port=port, loop=loop, limit=limit,
-                ssh=ssl, family=family, proto=proto, flags=flags,
+                ssl=ssl, family=family, proto=proto, flags=flags,
                 sock=sock, local_addr=local_addr,
                 server_hostname=server_hostname,
             )

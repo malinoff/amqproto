@@ -177,9 +177,11 @@ class Channel:
 
         message, self._message = self._message, None
         if self._message_fut is not None:
+            # BasicGet route
             self._message_fut.set_result(message)
             self._message_fut = None
         else:
+            # BasicConsume route
             consumer_tag = message.delivery_info.consumer_tag
             message_fut = self._consumers[consumer_tag]
             fut = self._consumers[consumer_tag] = self.Future()
@@ -396,12 +398,12 @@ class Channel:
             return self._fut
 
         fut = self._consumers[method.consumer_tag] = self.Future()
-        return fut
+        return fut, consumer_tag
 
     def _receive_BasicConsumeOK(self, frame):
         consumer_tag = frame.payload.consumer_tag
         fut = self._consumers[consumer_tag] = self.Future()
-        self._fut.set_result(fut)
+        self._fut.set_result((fut, consumer_tag))
         self._fut = self.Future()
 
     def basic_cancel(self, consumer_tag, no_wait=False):
