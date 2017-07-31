@@ -1,4 +1,5 @@
 import io
+import uuid
 import logging
 import collections
 import collections.abc
@@ -20,22 +21,11 @@ class Channel:
         self._frame_max = frame_max
 
         self._buffer = io.BytesIO()
-        # Future used to synchronise Do/DoOK methods
+        # Future used to synchronise AMQP methods with OK replies
         self._fut = self.Future()
         self._method_handlers = self._setup_method_handlers()
 
-        self._fsm = fsm.FunctionalMachine(
-            'channel_fsm',
-            transitions=fsm.Channel.transitions,
-            states=fsm.Channel.states,
-            initial_state=fsm.Channel.initial_state,
-        )
-        self._framing_fsm = fsm.FunctionalMachine(
-            'framing_fsm',
-            transitions=fsm.ChannelFraming.transitions,
-            states=fsm.ChannelFraming.states,
-            initial_state=fsm.ChannelFraming.initial_state,
-        )
+        self._fsm = fsm.Channel()
 
         # protocol.Message is instantiated in _receive_BasicDeliver,
         # its delivery_info is set. Later, basic properties are set in
@@ -52,7 +42,6 @@ class Channel:
         self._unconfirmed_set = set()
         self._ack_fut = self.Future()
 
-        self.alive = True
         self.active = True
 
     def _setup_method_handlers(self):
@@ -97,59 +86,43 @@ class Channel:
         self._buffer = io.BytesIO()
         return data
 
-    def _send_method(self, method):
-        no_wait = (getattr(method, 'no_wait', False) or
-                   getattr(method, 'nowait', False))
-        if no_wait:
-            event = 'send_MethodFrame_nowait'
-        elif getattr(method, 'content', False):
-            event = 'send_MethodFrame_content'
-        else:
-            event = 'send_MethodFrame'
-        self._framing_fsm.trigger(event)
-        self._fsm.trigger('send_{}{}'.format(
-            method.__class__.__name__, '_nowait' if no_wait else ''
-        ))
+    def _send_method(self, method, has_reply=True, header=None, bodies=None):
         frame = protocol.MethodFrame(self._channel_id, method)
-        self._send_frame(frame, method=method)
-
-    def _send_frame(self, frame, method=None):
-        method_name = method.__class__.__name__ if method is not None else ' '
-        logger.debug(
-            'Sending %s%s[channel_id:%s]',
-            frame.__class__.__name__, method_name, self._channel_id
-        )
-        #self._heartbeater.update_sent_time()
-        if method is None:
-            self._framing_fsm.trigger('send_' + frame.__class__.__name__)
         frame.to_bytestream(self._buffer)
+        if header is not None and bodies is not None:
+            frame = protocol.ContentHeaderFrame(self._channel_id, header)
+            frame.to_bytestream(self._buffer)
+            for body in bodies:
+                frame = protocol.ContentBodyFrame(self._channel_id, body)
+                frame.to_bytestream(self._buffer)
+        flush_future = self._flush_outbound(has_reply=has_reply)
+        if has_reply:
+            return self._fut
+        return flush_future
+
+    def _flush_outbound(self, has_reply):
+        # To be overriden in io adapters
+        pass
 
     def handle_frame(self, frame):
         if isinstance(frame, protocol.MethodFrame):
             method = frame.payload
-            if getattr(method, 'content', False):
-                event = 'receive_MethodFrame_content'
-            else:
-                event = 'receive_MethodFrame'
             logger.debug(
                 'Receiving MethodFrame %s [channel_id:%s]',
                 method.__class__.__name__, self._channel_id,
             )
-            self._framing_fsm.trigger(event)
             if self._message is not None:
                 # A peer decided to stop sending the message for some reason
                 self._process_message()
-            self._fsm.trigger('receive_' + frame.payload.__class__.__name__)
             method = frame.payload
             handler = self._method_handlers[method.__class__]
-            handler(frame)
+            return handler(method)
 
         elif isinstance(frame, protocol.ContentHeaderFrame):
             logger.debug(
                 'Receiving ContentHeaderFrame [channel_id:%s]',
                 self._channel_id
             )
-            self._framing_fsm.trigger('receive_ContentHeaderFrame')
 
             self._message.__dict__.update(**frame.payload.properties)
             self._message.body_size = frame.payload.body_size
@@ -161,24 +134,13 @@ class Channel:
                 'Receiving ContentBodyFrame [channel_id:%s]',
                 self._channel_id
             )
-            self._framing_fsm.trigger('receive_ContentBodyFrame')
 
             self._message.body += frame.payload.data
             if len(self._message.body) == self._message.body_size:
                 # Message is received completely
                 self._process_message()
 
-    def _send_ContentHeaderFrame(self, payload):
-        frame = protocol.ContentHeaderFrame(self._channel_id, payload)
-        self._send_frame(frame)
-
-    def _send_ContentBodyFrame(self, payload):
-        frame = protocol.ContentBodyFrame(self._channel_id, payload)
-        self._send_frame(frame)
-
     def _process_message(self):
-        self._framing_fsm.trigger('receive_BasicMessage')
-
         message, self._message = self._message, None
         if self._message_fut is not None:
             # BasicGet route
@@ -189,66 +151,63 @@ class Channel:
             consumer_tag = message.delivery_info.consumer_tag
             message_fut = self._consumers[consumer_tag]
             fut = self._consumers[consumer_tag] = self.Future()
-            message_fut.set_result((message, fut))
+            message_fut.set_result((fut, message))
 
     def open(self):
+        self._fsm.initiate()
         method = protocol.ChannelOpen()
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_ChannelOpenOK(self, frame):
-        self.alive = True
+    def _receive_ChannelOpenOK(self, method):
+        self._fsm.open()
         self._fut.set_result(None)
         self._fut = self.Future()
 
     def close(self, reply_code, reply_text, class_id=0, method_id=0):
+        self._fsm.close()
         method = protocol.ChannelClose(
             reply_code=reply_code, reply_text=reply_text,
             class_id=class_id, method_id=method_id,
         )
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_ChannelCloseOK(self, frame):
-        self.alive = False
+    def _receive_ChannelCloseOK(self, method):
+        self._fsm.terminate()
         self._fut.set_result(None)
         self._fut = self.Future()
 
-    def _receive_ChannelClose(self, frame):
-        method = frame.payload
+    def _receive_ChannelClose(self, method):
+        self._fsm.close()
         AMQPError = protocol.ERRORS_BY_CODE[method.reply_code]
         exc = AMQPError(
             method.reply_text,
             method.class_id,
             method.method_id,
         )
-        self.send_ChannelCloseOK(exc)
+        self._send_ChannelCloseOK(exc)
 
-    def send_ChannelCloseOK(self, _exc):
-        self.alive = False
+    def _send_ChannelCloseOK(self, _exc):
+        self._fsm.terminate()
         method = protocol.ChannelCloseOK()
+        # XXX maybe not raise the exception here?
         self._send_method(method)
         raise _exc
 
     def flow(self, active):
         method = protocol.ChannelFlow(active=active)
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_ChannelFlowOK(self, frame):
-        self._fut.set_result(frame.payload.active)
+    def _receive_ChannelFlowOK(self, method):
+        self._fut.set_result(method.active)
         self._fut = self.Future()
 
-    def _receive_ChannelFlow(self, frame):
-        self.active = frame.payload.active
-        self.send_ChannelFlowOK(active=self.active)
-        self._fut.set_result(self.active)
-        self._fut = self.Future()
+    def _receive_ChannelFlow(self, method):
+        self.active = method.active
+        return self._send_ChannelFlowOK(active=self.active)
 
-    def send_ChannelFlowOK(self, active):
+    def _send_ChannelFlowOK(self, active):
         method = protocol.ChannelFlowOK(active=active)
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
     def exchange_declare(self, exchange, type='direct', passive=False,
                          durable=False, auto_delete=True, internal=False,
@@ -258,11 +217,9 @@ class Channel:
             auto_delete=auto_delete, internal=internal, no_wait=no_wait,
             arguments=arguments
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_ExchangeDeclareOK(self, frame):
+    def _receive_ExchangeDeclareOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
@@ -270,11 +227,9 @@ class Channel:
         method = protocol.ExchangeDelete(
             exchange=exchange, if_unused=if_unused, no_wait=no_wait
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_ExchangeDeleteOK(self, frame):
+    def _receive_ExchangeDeleteOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
@@ -284,11 +239,9 @@ class Channel:
             destination=destination, source=source, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_ExchangeBindOK(self, frame):
+    def _receive_ExchangeBindOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
@@ -298,11 +251,9 @@ class Channel:
             destination=destination, source=source, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_ExchangeUnbindOK(self, frame):
+    def _receive_ExchangeUnbindOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
@@ -314,12 +265,9 @@ class Channel:
             exclusive=exclusive, auto_delete=auto_delete,
             no_wait=no_wait, arguments=arguments,
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_QueueDeclareOK(self, frame):
-        method = frame.payload
+    def _receive_QueueDeclareOK(self, method):
         self._fut.set_result((
             method.queue, method.message_count, method.consumer_count
         ))
@@ -331,11 +279,9 @@ class Channel:
             queue=queue, exchange=exchange, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_QueueBindOK(self, frame):
+    def _receive_QueueBindOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
@@ -344,21 +290,18 @@ class Channel:
             queue=queue, exchange=exchange, routing_key=routing_key,
             arguments=arguments,
         )
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_QueueUnbindOK(self, frame):
+    def _receive_QueueUnbindOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
     def queue_purge(self, queue, no_wait=False):
         method = protocol.QueuePurge(queue=queue, no_wait=no_wait)
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_QueuePurgeOK(self, frame):
-        self._fut.set_result(frame.payload.message_count)
+    def _receive_QueuePurgeOK(self, method):
+        self._fut.set_result(method.message_count)
         self._fut = self.Future()
 
     def queue_delete(self, queue, if_unused=False, if_empty=False,
@@ -367,12 +310,10 @@ class Channel:
             queue=queue, if_unused=if_unused, if_empty=if_empty,
             no_wait=no_wait,
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_QueueDeleteOK(self, frame):
-        self._fut.set_result(frame.payload.message_count)
+    def _receive_QueueDeleteOK(self, method):
+        self._fut.set_result(method.message_count)
         self._fut = self.Future()
 
     def basic_qos(self, prefetch_size, prefetch_count, global_):
@@ -380,49 +321,43 @@ class Channel:
             prefetch_size=prefetch_size, prefetch_count=prefetch_count,
             global_=global_,
         )
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_BasicQosOK(self, frame):
+    def _receive_BasicQosOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
     def basic_consume(self, queue='', consumer_tag='',
                       no_local=False, no_ack=False, exclusive=False,
                       no_wait=False, arguments=None):
-        assert consumer_tag or not no_wait, 'consumer_tag must be specified'
+        if not consumer_tag:
+            consumer_tag = str(uuid.uuid4())
         method = protocol.BasicConsume(
             queue=queue, consumer_tag=consumer_tag, no_local=no_local,
             no_ack=no_ack, exclusive=exclusive, no_wait=no_wait,
             arguments=arguments,
         )
-
-        self._send_method(method)
         if not no_wait:
-            return self._fut
-
+            return self._send_method(method)
         fut = self._consumers[method.consumer_tag] = self.Future()
+        self._send_method(method, has_reply=False)
         return fut, consumer_tag
 
-    def _receive_BasicConsumeOK(self, frame):
-        consumer_tag = frame.payload.consumer_tag
-        fut = self._consumers[consumer_tag] = self.Future()
-        self._fut.set_result((fut, consumer_tag))
+    def _receive_BasicConsumeOK(self, method):
+        consumer_tag = method.consumer_tag
+        consume_future = self._consumers[consumer_tag] = self.Future()
+        self._fut.set_result((consume_future, consumer_tag))
         self._fut = self.Future()
 
     def basic_cancel(self, consumer_tag, no_wait=False):
         method = protocol.BasicCancel(
             consumer_tag=consumer_tag, no_wait=no_wait
         )
-        self._send_method(method)
-        if not no_wait:
-            return self._fut
-        else:
-            del self._consumers[method.consumer_tag]
+        del self._consumers[method.consumer_tag]
+        return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_BasicCancelOK(self, frame):
-        consumer_tag = frame.payload.consumer_tag
-        del self._consumers[consumer_tag]
+    def _receive_BasicCancelOK(self, method):
+        consumer_tag = method.consumer_tag
         self._fut.set_result(consumer_tag)
         self._fut = self.Future()
 
@@ -435,21 +370,20 @@ class Channel:
             exchange=exchange, routing_key=routing_key,
             mandatory=mandatory, immediate=immediate,
         )
-        self._send_method(method)
 
-        header_payload = protocol.ContentHeaderPayload(
+        header = protocol.ContentHeaderPayload(
             class_id=method.method_type[0],
             body_size=message.body_size,
             properties=message.properties,
         )
-        self._send_ContentHeaderFrame(header_payload)
 
         max_payload_size = self._frame_max - protocol.Frame.METADATA_SIZE
-        for chunk in _chunked(message.body, max_payload_size):
-            body_payload = protocol.ContentBodyPayload(chunk)
-            self._send_ContentBodyFrame(body_payload)
+        bodies = [protocol.ContentBodyPayload(chunk)
+                  for chunk in _chunked(message.body, max_payload_size)]
+        return self._send_method(method, has_reply=False,
+                                 header=header, bodies=bodies)
 
-    def _receive_BasicReturn(self, frame):
+    def _receive_BasicReturn(self, method):
         # RabbitMQ does not support BasicPublish with immediate=True
         # http://www.rabbitmq.com/blog/2012/11/19/breaking-things-with-rabbitmq-3-0/
         # If you *really* *really* need to handle this case with an other
@@ -457,36 +391,28 @@ class Channel:
         # and write this logic by yourself.
         raise NotImplementedError
 
-    def _receive_BasicDeliver(self, frame):
-        consumer_tag = frame.payload.consumer_tag
+    def _receive_BasicDeliver(self, method):
+        consumer_tag = method.consumer_tag
         if consumer_tag not in self._consumers:
-            class_id, method_id = frame.payload.method_type
+            class_id, method_id = method.method_type
             raise protocol.CommandInvalid(
                 'server has delivered a message to consumer with tag {}'
                 'but there is no such consumer'.format(consumer_tag),
                 class_id, method_id
             )
-        self._message = protocol.BasicMessage(delivery_info=frame.payload)
+        self._message = protocol.BasicMessage(delivery_info=method)
 
     def basic_get(self, queue, no_ack=False):
         method = protocol.BasicGet(queue=queue, no_ack=no_ack)
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_BasicGetOK(self, frame):
-        method = frame.payload
-        self._message = protocol.BasicMessage(delivery_info={
-            'delivery_tag': method.delivery_tag,
-            'redelivered': method.redelivered,
-            'exchange': method.exchange,
-            'routing_key': method.routing_key,
-            'message_count': method.message_count,
-        })
+    def _receive_BasicGetOK(self, method):
+        self._message = protocol.BasicMessage(delivery_info=method)
         self._message_fut = self.Future()
         self._fut.set_result(self._message_fut)
         self._fut = self.Future()
 
-    def _receive_BasicGetEmpty(self, frame):
+    def _receive_BasicGetEmpty(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
@@ -494,11 +420,11 @@ class Channel:
         method = protocol.BasicAck(
             delivery_tag=delivery_tag, multiple=multiple
         )
-        self._send_method(method)
+        return self._send_method(method, has_reply=False)
 
-    def _receive_BasicAck(self, frame):
-        delivery_tag = frame.payload.delivery_tag
-        multiple = frame.payload.multiple
+    def _receive_BasicAck(self, method):
+        delivery_tag = method.delivery_tag
+        multiple = method.multiple
         if multiple:
             self._unconfirmed_set.difference_update(
                 set(range(delivery_tag + 1))
@@ -513,18 +439,17 @@ class Channel:
         method = protocol.BasicReject(
             delivery_tag=delivery_tag, requeue=requeue,
         )
-        self._send_method(method)
+        return self._send_method(method, has_reply=False)
 
     def basic_recover_async(self, requeue=False):
         method = protocol.BasicRecoverAsync(requeue=requeue)
-        self._send_method(method)
+        return self._send_method(method, has_reply=False)
 
     def basic_recover(self, requeue=False):
         method = protocol.BasicRecover(requeue=requeue)
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_BasicRecoverOK(self, frame):
+    def _receive_BasicRecoverOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
@@ -532,50 +457,46 @@ class Channel:
         method = protocol.BasicNack(
             delivery_tag=delivery_tag, multiple=multiple, requeue=requeue
         )
-        self._send_method(method)
+        return self._send_method(method, has_reply=False)
 
-    def _receive_BasicNack(self, frame):
+    def _receive_BasicNack(self, method):
         raise NotImplementedError
 
     def tx_select(self):
         method = protocol.TxSelect()
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_TxSelectOK(self, frame):
+    def _receive_TxSelectOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
     def tx_commit(self):
         method = protocol.TxCommit()
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_TxCommitOK(self, frame):
+    def _receive_TxCommitOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
     def tx_rollback(self):
         method = protocol.TxRollback()
-        self._send_method(method)
-        return self._fut
+        return self._send_method(method)
 
-    def _receive_TxRollbackOK(self, frame):
+    def _receive_TxRollbackOK(self, method):
         self._fut.set_result(None)
         self._fut = self.Future()
 
     def confirm_select(self, no_wait=False):
+        if self._next_publish_seq_no == 0:
+            self._next_publish_seq_no = 1
         method = protocol.ConfirmSelect(nowait=no_wait)
-        self._send_method(method)
+        fut = self._send_method(method, has_reply=not no_wait)
         if not no_wait:
-            return self._fut
-        if self._next_publish_seq_no == 0:
-            self._next_publish_seq_no = 1
+            return fut
+        return self._ack_fut
 
-    def _receive_ConfirmSelectOK(self, frame):
-        if self._next_publish_seq_no == 0:
-            self._next_publish_seq_no = 1
-        self._fut.set_result(None)
+    def _receive_ConfirmSelectOK(self, method):
+        self._fut.set_result(self._ack_fut)
         self._fut = self.Future()
 
 

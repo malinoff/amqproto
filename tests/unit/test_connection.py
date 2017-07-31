@@ -268,7 +268,6 @@ def test_ConnectionOpenOK_handling():
     conn.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
-    assert conn.alive
 
 
 def test_correct_ConnectionClose_sending(ready_connection):
@@ -285,7 +284,6 @@ def test_correct_ConnectionClose_sending(ready_connection):
     ready_connection.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
-    assert not ready_connection.alive
 
 
 def test_correct_ConnectionClose_handling(ready_connection):
@@ -301,8 +299,6 @@ def test_correct_ConnectionClose_handling(ready_connection):
     method = protocol.ConnectionCloseOK()
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_connection.data_to_send()
-
-    assert not ready_connection.alive
 
     exc = excinfo.value
     assert exc.reply_code == 501

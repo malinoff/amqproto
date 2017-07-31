@@ -17,8 +17,6 @@ class Channel(SansioChannel):
         # Late call because we need self.Future available.
         super().__init__(*args, **kwargs)
 
-        self._waiters = set()
-
     def Future(self):
         return self.loop.create_future()
 
@@ -34,33 +32,10 @@ class Channel(SansioChannel):
             reply_text = exc.reply_text
         await self.close(reply_code, reply_text)
 
-    def _send_frame(self, *args, **kwargs):
-        super()._send_frame(*args, **kwargs)
+    def _flush_outbound(self, has_reply):
         self.writer.write(self.data_to_send())
-
-    async def basic_consume(self, *args, **kwargs):
-        future, consumer_tag = await super().basic_consume(*args, **kwargs)
-        self._waiters.add(future)
-        return consumer_tag
-
-    async def receive_messages(self):
-        while self._consumers:
-            done, self._waiters = await asyncio.wait(
-                self._waiters, loop=self.loop,
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            # done should have a single element, since we're waiting
-            # for FIRST_COMPLETED.
-            message, future = await next(iter(done))
-            consumer_tag = message.delivery_info.consumer_tag
-            # Return this future to the consumers set so we can consume
-            # from the same queue again.
-            self._waiters.add(future)
-            yield message
-
-    async def wait_for_confirms(self):
-        while self._unconfirmed_set:
-            await asyncio.sleep(1, loop=self.loop)
+        if not has_reply:
+            return self.writer.drain()
 
 
 class Connection(SansioConnection):
@@ -73,15 +48,17 @@ class Connection(SansioConnection):
         # Late call because we need self.Future available.
         super().__init__(**kwargs)
 
-        async def open_connection():
+        async def do_open_connection():
             self.reader, self.writer = await asyncio.open_connection(
                 host=host, port=port, loop=loop, limit=limit,
                 ssl=ssl, family=family, proto=proto, flags=flags,
                 sock=sock, local_addr=local_addr,
                 server_hostname=server_hostname,
             )
+            fut = self.initiate_connection()
             loop.create_task(self._communicate())
-        self._open_connection = open_connection
+            await fut
+        self._open_connection = do_open_connection
 
     def Future(self):
         return self.loop.create_future()
@@ -90,24 +67,26 @@ class Connection(SansioConnection):
         return Channel(*args, loop=self.loop, writer=self.writer, **kwargs)
 
     async def _communicate(self):
+        read, writer = self.reader.read, self.writer
+        writer.write(self.data_to_send())
+        await writer.drain()
+
         data = bytearray()
-        reader, writer = self.reader, self.writer
-        while self.alive:
-            writer.write(self.data_to_send())
-            await writer.drain()
+        while self._fsm.state != 'CLOSED':
             frame_max = self.properties['frame_max']
-            chunk = await reader.read(10 * frame_max)
+            chunk = await read(10 * frame_max)
             if not chunk:
                 break
             data += chunk
             frames = self.receive_frames(data)
             for frame in frames:
-                self.handle_frame(frame)
+                future = self.handle_frame(frame)
+                if future is not None:
+                    await future
                 data = data[frame_max:]
 
     async def __aenter__(self):
         await self._open_connection()
-        await self.initiate_connection()
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -118,6 +97,7 @@ class Connection(SansioConnection):
             reply_text = exc.reply_text
         await self.close(reply_code, reply_text)
 
-    def _send_method(self, *args, **kwargs):
-        super()._send_method(*args, **kwargs)
+    def _flush_outbound(self, has_reply):
         self.writer.write(self.data_to_send())
+        if not has_reply:
+            return self.writer.drain()

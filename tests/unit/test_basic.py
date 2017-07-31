@@ -112,7 +112,7 @@ def test_BasicGet_OK(ready_channel):
 
     for key in ('delivery_tag', 'redelivered', 'exchange', 'routing_key',
                 'message_count'):
-        assert received_message.delivery_info[key] == delivery_info[key]
+        assert getattr(received_message.delivery_info, key) == delivery_info[key]
 
 
 def test_BasicGet_Empty(ready_channel):
@@ -131,13 +131,15 @@ def test_BasicConsume(no_wait, ready_channel):
     fut = ready_channel.basic_consume(consumer_tag=b'foo', no_wait=no_wait)
 
     if not no_wait:
-        method = protocol.BasicConsumeOK(consumer_tag=b'foo')
+        fut, consumer_tag = fut
+        method = protocol.BasicConsumeOK(consumer_tag=consumer_tag)
         frame = protocol.MethodFrame(ready_channel._channel_id, method)
         ready_channel.handle_frame(frame)
 
         assert fut.done() and not fut.cancelled()
-        assert isinstance(fut.result(), concurrent.futures.Future)
-        fut = fut.result()
+        fut, consumer_tag = fut.result()
+        assert isinstance(fut, concurrent.futures.Future)
+        assert consumer_tag == b'foo'
 
     delivery_info = {
         'consumer_tag': b'foo',

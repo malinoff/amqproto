@@ -17,7 +17,6 @@ def test_correct_channel_opening(ready_connection):
     frame = protocol.MethodFrame(channel._channel_id, payload)
 
     ready_connection.handle_frame(frame)
-    assert channel.alive
 
     channel2 = ready_connection.get_channel()
     assert channel2._channel_id == 2
@@ -55,7 +54,6 @@ def test_correct_ChannelClose_sending(ready_channel):
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
-    assert not ready_channel.alive
 
 
 def test_correct_ChannelClose_handling(ready_channel):
@@ -69,8 +67,6 @@ def test_correct_ChannelClose_handling(ready_channel):
     method = protocol.ChannelCloseOK()
     method.to_bytestream(method_bytes)
     assert method_bytes.getvalue() in ready_channel.data_to_send()
-
-    assert not ready_channel.alive
 
     exc = excinfo.value
     assert exc.reply_code == args['reply_code']

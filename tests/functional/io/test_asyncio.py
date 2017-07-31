@@ -1,6 +1,3 @@
-import logging
-logging.basicConfig(level=logging.DEBUG)
-import asyncio
 import pytest
 
 from amqproto import protocol
@@ -26,8 +23,9 @@ async def test_produce_and_consume(event_loop):
             await chan.queue_declare('hello')
             message = protocol.BasicMessage(b'hello world')
             chan.basic_publish(message, exchange='', routing_key='hello')
-            consumer_tag = await chan.basic_consume('hello')
-            async for received_message in chan.receive_messages():
-                assert received_message.body == b'hello world'
-                assert received_message.delivery_info.routing_key == b'hello'
-                await chan.basic_cancel(consumer_tag)
+            fut, consumer_tag = await chan.basic_consume('hello')
+
+            fut, received_message = await fut
+            assert received_message.body == b'hello world'
+            assert received_message.delivery_info.routing_key == b'hello'
+            await chan.basic_cancel(consumer_tag)
