@@ -316,12 +316,13 @@ def test_can_receive_valid_frame(ready_connection):
     payload = protocol.ChannelOpenOK()
     frame = protocol.MethodFrame(1, payload)
     frame.to_bytestream(stream)
-    expected_frames.append(frame)
+    frame_size = stream.tell()
+    expected_frames.append((frame, frame_size))
 
     payload = protocol.ChannelOpenOK()
     frame = protocol.MethodFrame(1, payload)
     frame.to_bytestream(stream)
-    expected_frames.append(frame)
+    expected_frames.append((frame, frame_size))
 
     data = stream.getvalue()
 

@@ -49,7 +49,7 @@ class Channel:
             protocol.ChannelOpenOK: self._receive_ChannelOpenOK,
             protocol.ChannelClose: self._receive_ChannelClose,
             protocol.ChannelCloseOK: self._receive_ChannelCloseOK,
-            protocol.ChannelFlow: self._receive_method,
+            protocol.ChannelFlow: self._receive_ChannelFlow,
             protocol.ChannelFlowOK: self._receive_method,
 
             protocol.ExchangeDeclareOK: self._receive_method,

@@ -86,7 +86,7 @@ def test_ChannelFlow_sending(ready_channel):
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
-    assert not fut.result()
+    assert not fut.result().active
     assert ready_channel.active
 
 

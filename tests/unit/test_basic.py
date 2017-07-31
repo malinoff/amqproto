@@ -123,23 +123,25 @@ def test_BasicGet_Empty(ready_channel):
     ready_channel.handle_frame(frame)
 
     assert fut.done() and not fut.cancelled()
-    assert fut.result() is None
+    assert isinstance(fut.result(), protocol.BasicGetEmpty)
 
 
 @pytest.mark.parametrize('no_wait', [False, True])
 def test_BasicConsume(no_wait, ready_channel):
-    fut = ready_channel.basic_consume(consumer_tag=b'foo', no_wait=no_wait)
+    consumer_tag = b'foo'
+    fut = ready_channel.basic_consume(consumer_tag=consumer_tag, no_wait=no_wait)
 
-    if not no_wait:
-        fut, consumer_tag = fut
+    if no_wait:
+        fut, remote_consumer_tag = fut
+    else:
         method = protocol.BasicConsumeOK(consumer_tag=consumer_tag)
         frame = protocol.MethodFrame(ready_channel._channel_id, method)
         ready_channel.handle_frame(frame)
 
         assert fut.done() and not fut.cancelled()
-        fut, consumer_tag = fut.result()
+        fut, remote_consumer_tag = fut.result()
+        assert consumer_tag == remote_consumer_tag
         assert isinstance(fut, concurrent.futures.Future)
-        assert consumer_tag == b'foo'
 
     delivery_info = {
         'consumer_tag': b'foo',
@@ -167,7 +169,7 @@ def test_BasicConsume(no_wait, ready_channel):
     frame = protocol.ContentBodyFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
 
-    msg, new_message_fut = fut.result()
+    new_message_fut, msg = fut.result()
     assert msg.body == body
     assert isinstance(new_message_fut, concurrent.futures.Future)
 
@@ -187,7 +189,7 @@ def test_BasicConsume(no_wait, ready_channel):
     frame = protocol.ContentHeaderFrame(ready_channel._channel_id, payload)
     ready_channel.handle_frame(frame)
 
-    msg, new_message_fut = new_message_fut.result()
+    new_message_fut, msg = new_message_fut.result()
     assert msg.body == body
     assert isinstance(new_message_fut, concurrent.futures.Future)
 
@@ -215,7 +217,7 @@ def test_BasicConsume(no_wait, ready_channel):
     frame = protocol.MethodFrame(ready_channel._channel_id, method)
     ready_channel.handle_frame(frame)
 
-    msg, new_message_fut = new_message_fut.result()
+    new_message_fut, msg = new_message_fut.result()
     assert msg.body == b'hello'
     assert isinstance(new_message_fut, concurrent.futures.Future)
 
