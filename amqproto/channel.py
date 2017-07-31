@@ -22,7 +22,7 @@ class Channel:
 
         self._buffer = io.BytesIO()
         # Future used to synchronise AMQP methods with OK replies
-        self._fut = self.Future()
+        self._fut = None
         self._method_handlers = self._setup_method_handlers()
 
         self._fsm = fsm.Channel()
@@ -49,37 +49,40 @@ class Channel:
             protocol.ChannelOpenOK: self._receive_ChannelOpenOK,
             protocol.ChannelClose: self._receive_ChannelClose,
             protocol.ChannelCloseOK: self._receive_ChannelCloseOK,
-            protocol.ChannelFlow: self._receive_ChannelFlow,
+            protocol.ChannelFlow: self._receive_method,
             protocol.ChannelFlowOK: self._receive_ChannelFlowOK,
 
-            protocol.ExchangeDeclareOK: self._receive_ExchangeDeclareOK,
-            protocol.ExchangeBindOK: self._receive_ExchangeBindOK,
-            protocol.ExchangeUnbindOK: self._receive_ExchangeUnbindOK,
-            protocol.ExchangeDeleteOK: self._receive_ExchangeDeleteOK,
+            protocol.ExchangeDeclareOK: self._receive_method,
+            protocol.ExchangeBindOK: self._receive_method,
+            protocol.ExchangeUnbindOK: self._receive_method,
+            protocol.ExchangeDeleteOK: self._receive_method,
 
-            protocol.QueueDeclareOK: self._receive_QueueDeclareOK,
-            protocol.QueueBindOK: self._receive_QueueBindOK,
-            protocol.QueueUnbindOK: self._receive_QueueUnbindOK,
-            protocol.QueuePurgeOK: self._receive_QueuePurgeOK,
-            protocol.QueueDeleteOK: self._receive_QueueDeleteOK,
+            protocol.QueueDeclareOK: self._receive_method,
+            protocol.QueueBindOK: self._receive_method,
+            protocol.QueueUnbindOK: self._receive_method,
+            protocol.QueuePurgeOK: self._receive_method,
+            protocol.QueueDeleteOK: self._receive_method,
 
             protocol.BasicConsumeOK: self._receive_BasicConsumeOK,
-            protocol.BasicCancelOK: self._receive_BasicCancelOK,
+            protocol.BasicCancelOK: self._receive_method,
             protocol.BasicDeliver: self._receive_BasicDeliver,
             protocol.BasicGetOK: self._receive_BasicGetOK,
-            protocol.BasicGetEmpty: self._receive_BasicGetEmpty,
+            protocol.BasicGetEmpty: self._receive_method,
             protocol.BasicAck: self._receive_BasicAck,
             protocol.BasicNack: self._receive_BasicNack,
-            protocol.BasicQosOK: self._receive_BasicQosOK,
-            protocol.BasicRecoverOK: self._receive_BasicRecoverOK,
+            protocol.BasicQosOK: self._receive_method,
+            protocol.BasicRecoverOK: self._receive_method,
             protocol.BasicReturn: self._receive_BasicReturn,
 
             protocol.ConfirmSelectOK: self._receive_ConfirmSelectOK,
 
-            protocol.TxSelectOK: self._receive_TxSelectOK,
-            protocol.TxCommitOK: self._receive_TxCommitOK,
-            protocol.TxRollbackOK: self._receive_TxRollbackOK,
+            protocol.TxSelectOK: self._receive_method,
+            protocol.TxCommitOK: self._receive_method,
+            protocol.TxRollbackOK: self._receive_method,
         }
+
+    def _receive_method(self, method):
+        self._fut.set_result(method)
 
     def data_to_send(self):
         data = self._buffer.getvalue()
@@ -97,6 +100,7 @@ class Channel:
                 frame.to_bytestream(self._buffer)
         flush_future = self._flush_outbound(has_reply=has_reply)
         if has_reply:
+            self._fut = self.Future()
             return self._fut
         return flush_future
 
@@ -160,8 +164,7 @@ class Channel:
 
     def _receive_ChannelOpenOK(self, method):
         self._fsm.open()
-        self._fut.set_result(None)
-        self._fut = self.Future()
+        self._fut.set_result(method)
 
     def close(self, reply_code, reply_text, class_id=0, method_id=0):
         self._fsm.close()
@@ -173,8 +176,7 @@ class Channel:
 
     def _receive_ChannelCloseOK(self, method):
         self._fsm.terminate()
-        self._fut.set_result(None)
-        self._fut = self.Future()
+        self._fut.set_result(method)
 
     def _receive_ChannelClose(self, method):
         self._fsm.close()
@@ -197,10 +199,6 @@ class Channel:
         method = protocol.ChannelFlow(active=active)
         return self._send_method(method)
 
-    def _receive_ChannelFlowOK(self, method):
-        self._fut.set_result(method.active)
-        self._fut = self.Future()
-
     def _receive_ChannelFlow(self, method):
         self.active = method.active
         return self._send_ChannelFlowOK(active=self.active)
@@ -219,19 +217,11 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_ExchangeDeclareOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
-
     def exchange_delete(self, exchange, if_unused=False, no_wait=False):
         method = protocol.ExchangeDelete(
             exchange=exchange, if_unused=if_unused, no_wait=no_wait
         )
         return self._send_method(method, has_reply=not no_wait)
-
-    def _receive_ExchangeDeleteOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
 
     def exchange_bind(self, destination, source='', routing_key='',
                       no_wait=False, arguments=None):
@@ -241,10 +231,6 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_ExchangeBindOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
-
     def exchange_unbind(self, destination, source='', routing_key='',
                         no_wait=False, arguments=None):
         method = protocol.ExchangeUnbind(
@@ -252,10 +238,6 @@ class Channel:
             no_wait=no_wait, arguments=arguments,
         )
         return self._send_method(method, has_reply=not no_wait)
-
-    def _receive_ExchangeUnbindOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
 
     def queue_declare(self, queue='', passive=False, durable=False,
                       exclusive=False, auto_delete=True,
@@ -267,12 +249,6 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_QueueDeclareOK(self, method):
-        self._fut.set_result((
-            method.queue, method.message_count, method.consumer_count
-        ))
-        self._fut = self.Future()
-
     def queue_bind(self, queue, exchange='', routing_key='',
                    no_wait=False, arguments=None):
         method = protocol.QueueBind(
@@ -281,10 +257,6 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_QueueBindOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
-
     def queue_unbind(self, queue, exchange='', routing_key='', arguments=None):
         method = protocol.QueueUnbind(
             queue=queue, exchange=exchange, routing_key=routing_key,
@@ -292,17 +264,9 @@ class Channel:
         )
         return self._send_method(method)
 
-    def _receive_QueueUnbindOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
-
     def queue_purge(self, queue, no_wait=False):
         method = protocol.QueuePurge(queue=queue, no_wait=no_wait)
         return self._send_method(method, has_reply=not no_wait)
-
-    def _receive_QueuePurgeOK(self, method):
-        self._fut.set_result(method.message_count)
-        self._fut = self.Future()
 
     def queue_delete(self, queue, if_unused=False, if_empty=False,
                      no_wait=False):
@@ -312,20 +276,12 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
-    def _receive_QueueDeleteOK(self, method):
-        self._fut.set_result(method.message_count)
-        self._fut = self.Future()
-
     def basic_qos(self, prefetch_size, prefetch_count, global_):
         method = protocol.BasicQos(
             prefetch_size=prefetch_size, prefetch_count=prefetch_count,
             global_=global_,
         )
         return self._send_method(method)
-
-    def _receive_BasicQosOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
 
     def basic_consume(self, queue='', consumer_tag='',
                       no_local=False, no_ack=False, exclusive=False,
@@ -347,7 +303,6 @@ class Channel:
         consumer_tag = method.consumer_tag
         consume_future = self._consumers[consumer_tag] = self.Future()
         self._fut.set_result((consume_future, consumer_tag))
-        self._fut = self.Future()
 
     def basic_cancel(self, consumer_tag, no_wait=False):
         method = protocol.BasicCancel(
@@ -355,11 +310,6 @@ class Channel:
         )
         del self._consumers[method.consumer_tag]
         return self._send_method(method, has_reply=not no_wait)
-
-    def _receive_BasicCancelOK(self, method):
-        consumer_tag = method.consumer_tag
-        self._fut.set_result(consumer_tag)
-        self._fut = self.Future()
 
     def basic_publish(self, message, exchange='', routing_key='',
                       mandatory=False, immediate=False):
@@ -410,11 +360,6 @@ class Channel:
         self._message = protocol.BasicMessage(delivery_info=method)
         self._message_fut = self.Future()
         self._fut.set_result(self._message_fut)
-        self._fut = self.Future()
-
-    def _receive_BasicGetEmpty(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
 
     def basic_ack(self, delivery_tag='', multiple=False):
         method = protocol.BasicAck(
@@ -449,10 +394,6 @@ class Channel:
         method = protocol.BasicRecover(requeue=requeue)
         return self._send_method(method)
 
-    def _receive_BasicRecoverOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
-
     def basic_nack(self, delivery_tag='', multiple=False, requeue=False):
         method = protocol.BasicNack(
             delivery_tag=delivery_tag, multiple=multiple, requeue=requeue
@@ -466,25 +407,13 @@ class Channel:
         method = protocol.TxSelect()
         return self._send_method(method)
 
-    def _receive_TxSelectOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
-
     def tx_commit(self):
         method = protocol.TxCommit()
         return self._send_method(method)
 
-    def _receive_TxCommitOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
-
     def tx_rollback(self):
         method = protocol.TxRollback()
         return self._send_method(method)
-
-    def _receive_TxRollbackOK(self, method):
-        self._fut.set_result(None)
-        self._fut = self.Future()
 
     def confirm_select(self, no_wait=False):
         if self._next_publish_seq_no == 0:
@@ -497,7 +426,6 @@ class Channel:
 
     def _receive_ConfirmSelectOK(self, method):
         self._fut.set_result(self._ack_fut)
-        self._fut = self.Future()
 
 
 class ChannelsManager(collections.abc.Mapping):
