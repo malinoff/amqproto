@@ -154,7 +154,7 @@ class Connection:
                 )
                 raise protocol.FrameError(reply_text, class_id, method_id)
             offset += stream.tell()
-            yield frame
+            yield frame, stream.tell() - current_position
 
     def handle_frame(self, frame):
         channel_id = frame.channel_id

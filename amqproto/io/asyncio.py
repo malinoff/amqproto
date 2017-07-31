@@ -79,11 +79,11 @@ class Connection(SansioConnection):
                 break
             data += chunk
             frames = self.receive_frames(data)
-            for frame in frames:
+            for frame, frame_size in frames:
                 future = self.handle_frame(frame)
                 if future is not None:
                     await future
-                data = data[frame_max:]
+                data = data[frame_size:]
 
     async def __aenter__(self):
         await self._open_connection()
