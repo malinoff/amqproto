@@ -10,15 +10,12 @@ async def go(loop):
             await chan.queue_declare('hello')
             for i in range(1, MSGS + 1):
                 await chan.basic_publish(BasicMessage(b'hello, world'), routing_key='hello')
-            print('Done publishing')
 
             fut, consumer_tag = await chan.basic_consume('hello')
             for i in range(1, MSGS + 1):
                 fut, message = await fut
-                print(f'Consumed {i} messages so far')
                 await chan.basic_ack(message.delivery_info.delivery_tag)
             await chan.basic_cancel(consumer_tag)
-            print('Done consuming')
 
 loop = asyncio.get_event_loop()
 loop.run_until_complete(go(loop))

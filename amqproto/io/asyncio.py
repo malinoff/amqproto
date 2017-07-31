@@ -56,7 +56,7 @@ class Connection(SansioConnection):
                 server_hostname=server_hostname,
             )
             fut = self.initiate_connection()
-            loop.create_task(self._communicate())
+            self._communicate_task = loop.create_task(self._communicate())
             await fut
         self._open_connection = do_open_connection
 
@@ -96,6 +96,8 @@ class Connection(SansioConnection):
             reply_code = exc.reply_code
             reply_text = exc.reply_text
         await self.close(reply_code, reply_text)
+        self._communicate_task.cancel()
+        self.writer.close()
 
     def _flush_outbound(self, has_reply):
         self.writer.write(self.data_to_send())

@@ -298,7 +298,7 @@ class Connection:
             response=response,
             locale=locale
         )
-        return self._send_method(method, has_reply=False)
+        return self._send_method(method)
 
     def _receive_ConnectionSecure(self, method):
         self._fsm.secure()
@@ -313,7 +313,7 @@ class Connection:
         method = protocol.ConnectionSecureOK(
             response=self._handshake_properties['secure']['response']
         )
-        return self._send_method(method, has_reply=False)
+        return self._send_method(method)
 
     def _receive_ConnectionTune(self, method):
         client_props = self._tune_properties['client']
@@ -347,14 +347,14 @@ class Connection:
 
     def _send_ConnectionTuneOK(self):
         method = protocol.ConnectionTuneOK(**self.properties)
-        self._send_method(method, has_reply=False)
+        self._send_method(method)
         self._send_ConnectionOpen()
 
     def _send_ConnectionOpen(self):
         method = protocol.ConnectionOpen(
             virtual_host=self._virtual_host
         )
-        self._send_method(method, has_reply=False)
+        self._send_method(method)
 
     def _receive_ConnectionOpenOK(self, method):
         self._fut.set_result(method)
