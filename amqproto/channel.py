@@ -34,6 +34,8 @@ class Channel:
         self._message = None
         self._message_fut = None
 
+        self._returned_messages = collections.deque()
+
         # consumer_tag -> message_future mapping
         self._consumers = {}
 
@@ -150,6 +152,9 @@ class Channel:
             # BasicGet route
             self._message_fut.set_result(message)
             self._message_fut = None
+        elif isinstance(message.delivery_info, protocol.BasicReturn):
+            # BasicReturn route
+            self._returned_messages.append(message)
         else:
             # BasicConsume route
             consumer_tag = message.delivery_info.consumer_tag
@@ -313,6 +318,8 @@ class Channel:
 
     def basic_publish(self, message, exchange='', routing_key='',
                       mandatory=False, immediate=False):
+        # RabbitMQ does not support BasicPublish with immediate=True
+        # http://www.rabbitmq.com/blog/2012/11/19/breaking-things-with-rabbitmq-3-0/
         if self._next_publish_seq_no > 0:
             self._unconfirmed_set.add(self._next_publish_seq_no)
             self._next_publish_seq_no += 1
@@ -334,12 +341,12 @@ class Channel:
                                  header=header, bodies=bodies)
 
     def _receive_BasicReturn(self, method):
-        # RabbitMQ does not support BasicPublish with immediate=True
-        # http://www.rabbitmq.com/blog/2012/11/19/breaking-things-with-rabbitmq-3-0/
-        # If you *really* *really* need to handle this case with an other
-        # broker, simply hook into the specific IO adapter
-        # and write this logic by yourself.
-        raise NotImplementedError
+        self._message = protocol.BasicMessage(delivery_info=method)
+
+    def returned_messages(self):
+        while self._returned_messages:
+            message = self._returned_messages.popleft()
+            yield message
 
     def _receive_BasicDeliver(self, method):
         consumer_tag = method.consumer_tag

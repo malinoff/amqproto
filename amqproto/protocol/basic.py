@@ -42,7 +42,7 @@ class BasicMessage:
 
     # pylint: disable=unused-variable,too-many-locals,redefined-builtin
     def __init__(self, body=b'', *,
-                 delivery_info: dict=None,
+                 delivery_info=None,
                  body_size: int=None,
                  content_type: str='application/octet-stream',
                  content_encoding: str='utf-8',
