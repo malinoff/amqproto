@@ -5,6 +5,8 @@ from amqproto import protocol
 from amqproto.channel import Channel as SansioChannel
 from amqproto.connection import Connection as SansioConnection
 
+__all__ = ['Connection', 'Channel']
+
 
 class Channel(SansioChannel):
 
