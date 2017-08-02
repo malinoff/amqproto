@@ -60,8 +60,9 @@ def test_correct_ChannelClose_handling(ready_channel):
     method, args = draw_method_example(protocol.ChannelClose)
     frame = protocol.MethodFrame(ready_channel._channel_id, method)
 
+    ready_channel.handle_frame(frame)
     with pytest.raises(protocol.AMQPError) as excinfo:
-        ready_channel.handle_frame(frame)
+        ready_channel._fut.result()
 
     method_bytes = io.BytesIO()
     method = protocol.ChannelCloseOK()

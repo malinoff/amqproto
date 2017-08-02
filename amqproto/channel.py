@@ -107,8 +107,11 @@ class Channel:
         return flush_future
 
     def _flush_outbound(self, has_reply):
-        # To be overriden in io adapters
-        pass
+        # To be overriden in io adapters.
+        future = self.Future()
+        future.set_result(None)
+        # For convenience
+        return future
 
     def handle_frame(self, frame):
         if isinstance(frame, protocol.MethodFrame):

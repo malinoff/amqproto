@@ -29,8 +29,6 @@ def test_exchange_related_methods(method_name, method_cls, ok_method_cls, subtes
 
         fut = sender(**args)
         if method.no_wait:
-            assert fut is None
-
             method_bytes = io.BytesIO()
             method.to_bytestream(method_bytes)
             assert method_bytes.getvalue() in ready_channel.data_to_send()

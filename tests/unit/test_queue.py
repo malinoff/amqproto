@@ -34,9 +34,7 @@ def test_queue_related_methods(method_name, method_cls, ok_method_cls, subtest, 
         method.to_bytestream(method_bytes)
         assert method_bytes.getvalue() in ready_channel.data_to_send()
 
-        if getattr(method, 'no_wait', False):
-            assert fut is None
-        else:
+        if not getattr(method, 'no_wait', False):
             frame = protocol.MethodFrame(ready_channel._channel_id, ok_method)
             ready_channel.handle_frame(frame)
             assert fut.done() and not fut.cancelled()

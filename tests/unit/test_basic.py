@@ -230,8 +230,6 @@ def test_BasicConsume(no_wait, ready_channel):
         ready_channel.handle_frame(frame)
 
         assert fut.done() and not fut.cancelled()
-    else:
-        assert fut is None
 
     method = protocol.BasicDeliver(**delivery_info)
     frame = protocol.MethodFrame(ready_channel._channel_id, method)
