@@ -100,13 +100,17 @@ class Channel:
             for body in bodies:
                 frame = protocol.ContentBodyFrame(self._channel_id, body)
                 frame.to_bytestream(self._buffer)
-        flush_future = self._flush_outbound(has_reply=has_reply)
+        flush_future = self._flush_outbound()
         if has_reply:
             self._fut = self.Future()
+            def finalize_flush_future(_):
+                if not flush_future.done():
+                    flush_future.set_result(None)
+            self._fut.add_done_callback(finalize_flush_future)
             return self._fut
         return flush_future
 
-    def _flush_outbound(self, has_reply):
+    def _flush_outbound(self):
         # To be overriden in io adapters.
         future = self.Future()
         future.set_result(None)

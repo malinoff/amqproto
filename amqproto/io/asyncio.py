@@ -35,10 +35,9 @@ class Channel(SansioChannel):
                 reply_text = exc.reply_text
             await self.close(reply_code, reply_text)
 
-    def _flush_outbound(self, has_reply):
+    def _flush_outbound(self):
         self.writer.write(self.data_to_send())
-        if not has_reply:
-            return self.loop.create_task(self.writer.drain())
+        return self.loop.create_task(self.writer.drain())
 
 
 class Connection(SansioConnection):
@@ -103,7 +102,6 @@ class Connection(SansioConnection):
         self._communicate_task.cancel()
         self.writer.close()
 
-    def _flush_outbound(self, has_reply):
+    def _flush_outbound(self):
         self.writer.write(self.data_to_send())
-        if not has_reply:
-            return self.loop.create_task(self.writer.drain())
+        return self.loop.create_task(self.writer.drain())

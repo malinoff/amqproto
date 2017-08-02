@@ -203,12 +203,16 @@ class Connection:
 
     def _send_frame(self, frame, has_reply=True):
         frame.to_bytestream(self._buffer)
-        future = self._flush_outbound(has_reply=has_reply)
+        flush_future = self._flush_outbound()
         if has_reply:
+            def finalize_flush_future(_):
+                if not flush_future.done():
+                    flush_future.set_result(None)
+            self._fut.add_done_callback(finalize_flush_future)
             return self._fut
-        return future
+        return flush_future
 
-    def _flush_outbound(self, has_reply):
+    def _flush_outbound(self):
         # To be overriden in io adapters
         pass
 
@@ -355,7 +359,7 @@ class Connection:
         frame = protocol.MethodFrame(self._channel_id, method)
         frame.to_bytestream(self._buffer)
 
-        return self._flush_outbound(has_reply=False)
+        return self._flush_outbound()
 
     def _receive_ConnectionOpenOK(self, method):
         self._fsm.open()
