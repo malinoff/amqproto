@@ -4,7 +4,7 @@ amqproto.protocol.methods
 
 Implementation of AMQP methods.
 
-This file was generated 2017-02-12 from
+This file was generated 2017-08-02 from
 /codegen/amqp0-9-1.extended.xml.
 
 """

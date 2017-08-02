@@ -316,6 +316,7 @@ class Connection:
         return self._send_method(method, has_reply=False)
 
     def _receive_ConnectionTune(self, method):
+        self._fsm.tune()
         client_props = self._tune_properties['client']
         server_props = self._tune_properties['server']
 
@@ -357,8 +358,13 @@ class Connection:
         return self._flush_outbound(has_reply=False)
 
     def _receive_ConnectionOpenOK(self, method):
+        self._fsm.open()
         self._fut.set_result(method)
         self._fut = self.Future()
+
+    @property
+    def closed(self):
+        return self._fsm.state == 'CLOSED'
 
     def close(self, reply_code, reply_text, class_id=0, method_id=0):
         method = protocol.ConnectionClose(

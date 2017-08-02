@@ -4,12 +4,13 @@ amqproto.protocol.errors
 
 AMQP errors classes.
 
-This file was generated 2017-02-12 from
+This file was generated 2017-08-02 from
 /codegen/amqp0-9-1.extended.xml.
 
 """
 # Some exceptions may shadow builtins.
 # pylint: disable=redefined-builtin
+
 from itertools import chain
 
 
@@ -27,10 +28,12 @@ class AMQPError(Exception):
         self.class_id = class_id
         self.method_id = method_id
 
+    def __str__(self):
+        return self.reply_text.decode('utf-8')
+
     def __repr__(self):
-        soft = 'soft' if self.soft else 'hard'
-        return '<AMQPError ({}): {}, {}, {}>'.format(
-            soft, self.reply_code, self.class_id, self.method_id
+        return '<AMQPError: {}, {}, {}>'.format(
+            self.reply_code, self.class_id, self.method_id
         )
 
 

@@ -171,6 +171,10 @@ class Channel:
         self._fsm.open()
         self._fut.set_result(method)
 
+    @property
+    def closed(self):
+        return self._fsm.state == 'CLOSED'
+
     def close(self, reply_code, reply_text, class_id=0, method_id=0):
         self._fsm.close()
         method = protocol.ChannelClose(
@@ -193,12 +197,13 @@ class Channel:
         )
         self._send_ChannelCloseOK(exc)
 
-    def _send_ChannelCloseOK(self, _exc):
+    def _send_ChannelCloseOK(self, exc):
         self._fsm.terminate()
         method = protocol.ChannelCloseOK()
-        # XXX maybe not raise the exception here?
-        self._send_method(method)
-        raise _exc
+        future = self._send_method(method, has_reply=False)
+        future.add_done_callback(
+            lambda f: self._fut.set_exception(exc)
+        )
 
     def flow(self, active):
         method = protocol.ChannelFlow(active=active)

@@ -117,7 +117,7 @@ async def test_produce_and_consume(channel):
 
 
 @pytest.mark.asyncio(forbid_global_loop=True)
-async def test_mandatory_flag_raises_when_not_delivered(channel):
+async def test_mandatory_flag_handles_undelivered_messages(channel):
     message = protocol.BasicMessage(b'some message')
     exchange_name = 'amqproto_test'
     await channel.exchange_declare(exchange_name)
@@ -153,3 +153,9 @@ async def test_mandatory_flag_on_existing_queue(channel):
     # cleanup
     await channel.queue_unbind(queue_name, exchange_name)
     await channel.queue_delete(queue_name)
+
+
+@pytest.mark.asyncio(forbid_global_loop=True)
+async def test_channel_errors_are_handled_properly(channel):
+    with pytest.raises(protocol.AMQPError):
+        await channel.queue_unbind('amqproto_test_q', '')

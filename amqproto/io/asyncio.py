@@ -25,17 +25,18 @@ class Channel(SansioChannel):
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        reply_code = 0
-        reply_text = ''
-        if isinstance(exc, protocol.AMQPError):
-            reply_code = exc.reply_code
-            reply_text = exc.reply_text
-        await self.close(reply_code, reply_text)
+        if not self.closed:
+            reply_code = 0
+            reply_text = ''
+            if isinstance(exc, protocol.AMQPError):
+                reply_code = exc.reply_code
+                reply_text = exc.reply_text
+            await self.close(reply_code, reply_text)
 
     def _flush_outbound(self, has_reply):
         self.writer.write(self.data_to_send())
         if not has_reply:
-            return self.writer.drain()
+            return self.loop.create_task(self.writer.drain())
 
 
 class Connection(SansioConnection):
@@ -72,7 +73,7 @@ class Connection(SansioConnection):
         await writer.drain()
 
         data = bytearray()
-        while self._fsm.state != 'CLOSED':
+        while not self.closed:
             frame_max = self.properties['frame_max']
             chunk = await read(10 * frame_max)
             if not chunk:
@@ -90,16 +91,17 @@ class Connection(SansioConnection):
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        reply_code = 0
-        reply_text = ''
-        if isinstance(exc, protocol.AMQPError):
-            reply_code = exc.reply_code
-            reply_text = exc.reply_text
-        await self.close(reply_code, reply_text)
+        if not self.closed:
+            reply_code = 0
+            reply_text = ''
+            if isinstance(exc, protocol.AMQPError):
+                reply_code = exc.reply_code
+                reply_text = exc.reply_text
+            await self.close(reply_code, reply_text)
         self._communicate_task.cancel()
         self.writer.close()
 
     def _flush_outbound(self, has_reply):
         self.writer.write(self.data_to_send())
         if not has_reply:
-            return self.writer.drain()
+            return self.loop.create_task(self.writer.drain())
