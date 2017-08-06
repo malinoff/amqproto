@@ -203,7 +203,7 @@ class Connection:
 
     def _send_frame(self, frame, has_reply=True):
         frame.to_bytestream(self._buffer)
-        flush_future = self._flush_outbound()
+        flush_future = self._flush_outbound(has_reply)
         if has_reply:
             def finalize_flush_future(_):
                 if not flush_future.done():
