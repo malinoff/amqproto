@@ -1,3 +1,5 @@
+#import logging
+#logging.basicConfig(level=logging.DEBUG)
 import asyncio
 
 import pytest
@@ -98,8 +100,7 @@ async def test_can_get_messages(channel):
     await channel.queue_declare('hello')
     message = protocol.BasicMessage(b'hello world')
     await channel.basic_publish(message, exchange='', routing_key='hello')
-    fut = await channel.basic_get('hello')
-    received_message = await fut
+    received_message = await channel.basic_get('hello')
     assert received_message.body == b'hello world'
 
 
@@ -108,11 +109,16 @@ async def test_produce_and_consume(channel):
     await channel.queue_declare('hello')
     message = protocol.BasicMessage(b'hello world')
     await channel.basic_publish(message, exchange='', routing_key='hello')
-    fut, consumer_tag = await channel.basic_consume('hello')
+    reply = await channel.basic_consume('hello')
+    consumer_tag = reply.consumer_tag
 
-    fut, received_message = await fut
-    assert received_message.body == b'hello world'
-    assert received_message.delivery_info.routing_key == b'hello'
+    async for received_message in channel.consumed_messages():
+        assert received_message.body == b'hello world'
+        assert received_message.delivery_info.routing_key == b'hello'
+        break
+
+    assert channel._consumed_messages.empty()
+
     await channel.basic_cancel(consumer_tag)
 
 
@@ -128,10 +134,11 @@ async def test_mandatory_flag_handles_undelivered_messages(channel):
         routing_key='foobar',  # this queue doesnt exist
         mandatory=True,
     )
-    await asyncio.sleep(1, loop=channel.loop)
-    returned_messages = list(channel.returned_messages())
-    assert len(returned_messages) == 1
-    assert returned_messages[0].body == message.body
+    async for returned_message in channel.returned_messages():
+        assert returned_message.body == message.body
+        break
+
+    assert channel._returned_messages.empty()
 
     await channel.exchange_delete(exchange_name)
 
@@ -147,8 +154,8 @@ async def test_mandatory_flag_on_existing_queue(channel):
     await channel.basic_publish(
         message, routing_key='amqproto_test_q', mandatory=True
     )
-    await asyncio.sleep(1, loop=channel.loop)
-    assert not list(channel.returned_messages())
+    await asyncio.sleep(0.1, loop=channel.loop)
+    assert channel._returned_messages.empty()
 
     # cleanup
     await channel.queue_unbind(queue_name, exchange_name)

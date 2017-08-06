@@ -31,7 +31,6 @@ DEFAULT_CLIENT_PROPERTIES = {
 
 class Connection:
 
-    Future = Future
     Channel = channel.Channel
 
     def __init__(self,
@@ -52,8 +51,6 @@ class Connection:
 
         self._channel_id = 0
         self._buffer = io.BytesIO()
-        # Future used to synchronise AMQP methods with OK replies
-        self._fut = self.Future()
         self._method_handlers = self._setup_method_handlers()
 
         self._channels_manager = None
@@ -197,29 +194,17 @@ class Connection:
     def get_channel(self, channel_id=None):
         return self._channels_manager[channel_id]
 
-    def _send_method(self, method, has_reply=True):
+    def _send_method(self, method):
         frame = protocol.MethodFrame(self._channel_id, method)
-        return self._send_frame(frame, has_reply=has_reply)
+        self._send_frame(frame)
 
-    def _send_frame(self, frame, has_reply=True):
+    def _send_frame(self, frame):
         frame.to_bytestream(self._buffer)
-        flush_future = self._flush_outbound(has_reply)
-        if has_reply:
-            def finalize_flush_future(_):
-                if not flush_future.done():
-                    flush_future.set_result(None)
-            self._fut.add_done_callback(finalize_flush_future)
-            return self._fut
-        return flush_future
-
-    def _flush_outbound(self):
-        # To be overriden in io adapters
-        pass
 
     def _send_HeartbeatFrame(self):
         payload = protocol.HeartbeatPayload()
         frame = protocol.HeartbeatFrame(self._channel_id, payload)
-        return self._send_frame(frame, has_reply=False)
+        self._send_frame(frame)
 
     # Handshake
     def _send_ProtocolHeaderFrame(self):
@@ -231,7 +216,7 @@ class Connection:
         frame = protocol.ProtocolHeaderFrame(
             self._channel_id, payload=payload
         )
-        return self._send_frame(frame)
+        self._send_frame(frame)
 
     def _handle_ProtocolHeaderFrame(self,
                                     frame: protocol.ProtocolHeaderFrame):
@@ -302,7 +287,7 @@ class Connection:
             response=response,
             locale=locale
         )
-        return self._send_method(method, has_reply=False)
+        self._send_method(method)
 
     def _receive_ConnectionSecure(self, method):
         self._fsm.secure()
@@ -317,7 +302,7 @@ class Connection:
         method = protocol.ConnectionSecureOK(
             response=self._handshake_properties['secure']['response']
         )
-        return self._send_method(method, has_reply=False)
+        self._send_method(method)
 
     def _receive_ConnectionTune(self, method):
         self._fsm.tune()
@@ -354,17 +339,15 @@ class Connection:
         method = protocol.ConnectionTuneOK(**self.properties)
         frame = protocol.MethodFrame(self._channel_id, method)
         frame.to_bytestream(self._buffer)
-        # send_ConnectionOpen()
+        self._send_ConnectionOpen()
+
+    def _send_ConnectionOpen(self):
         method = protocol.ConnectionOpen(virtual_host=self._virtual_host)
         frame = protocol.MethodFrame(self._channel_id, method)
         frame.to_bytestream(self._buffer)
 
-        return self._flush_outbound()
-
     def _receive_ConnectionOpenOK(self, method):
         self._fsm.open()
-        self._fut.set_result(method)
-        self._fut = self.Future()
 
     @property
     def closed(self):
@@ -375,11 +358,10 @@ class Connection:
             reply_code=reply_code, reply_text=reply_text,
             class_id=class_id, method_id=method_id
         )
-        return self._send_method(method)
+        self._send_method(method)
 
     def _receive_ConnectionCloseOK(self, method):
-        self._fut.set_result(method)
-        self._fut = self.Future()
+        pass
 
     def _receive_ConnectionClose(self, method):
         AMQPError = protocol.ERRORS_BY_CODE[method.reply_code]
