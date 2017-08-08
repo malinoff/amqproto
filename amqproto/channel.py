@@ -106,11 +106,11 @@ class Channel:
             'Receiving MethodFrame %s [channel_id:%s]',
             method.__class__.__name__, self._channel_id,
         )
-        if self._message is not None:
-            # A peer decided to stop sending the message for some reason
-            self._process_message()
         handler = self._method_handlers[method.__class__]
-        return handler(method)
+        message = None
+        if self._message is not None:
+            message, self._message = self._message, None
+        return handler(method), message
 
     def handle_content_header_frame(self, frame):
         logger.debug(
@@ -121,7 +121,9 @@ class Channel:
         self._message.__dict__.update(**frame.payload.properties)
         self._message.body_size = frame.payload.body_size
         if self._message.body_size == 0:
-            self._process_message()
+            message, self._message = self._message, None
+            return None, message
+        return None, None
 
     def handle_content_body_frame(self, frame):
         logger.debug(
@@ -131,8 +133,9 @@ class Channel:
 
         self._message.body += frame.payload.data
         if len(self._message.body) == self._message.body_size:
-            # Message is received completely
-            self._process_message()
+            message, self._message = self._message, None
+            return None, message
+        return None, None
 
     def _process_message(self):
         raise NotImplementedError

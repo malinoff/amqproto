@@ -5,10 +5,10 @@ import platform
 import pkg_resources
 from concurrent.futures import Future
 
-from . import protocol
 
 from . import fsm
 from . import channel
+from . import protocol
 from . import auth as _auth_methods
 
 logger = logging.getLogger(__name__)
@@ -119,8 +119,8 @@ class Connection:
     def data_to_send(self):
         data = self._buffer.getvalue()
         if self._channels_manager is not None:
-            for chan in self._channels_manager.values():
-                data += chan.data_to_send()
+            for channel in self._channels_manager.values():
+                data += channel.data_to_send()
         self._buffer = io.BytesIO()
         return data
 
@@ -152,19 +152,12 @@ class Connection:
             yield frame
 
     def handle_frame(self, frame):
-        channel_id = frame.channel_id
-        if channel_id != 0:
-            channel = self._channels_manager[channel_id]
-            future = channel.handle_frame(frame)
-            self._buffer.write(channel.data_to_send())
-            return future
-
         if isinstance(frame, protocol.MethodFrame):
+            method = frame.payload
             logger.debug(
                 'Receiving MethodFrame %s [channel_id:%s]',
-                frame.payload.__class__.__name__, self._channel_id
+                method.__class__.__name__, self._channel_id
             )
-            method = frame.payload
             handler = self._method_handlers[method.__class__]
             return handler(method)
         elif isinstance(frame, protocol.ProtocolHeaderFrame):
@@ -172,7 +165,7 @@ class Connection:
                 'Receiving ProtocolHeaderFrame [channel_id:%s]',
                 self._channel_id
             )
-            return self._handle_ProtocolHeaderFrame(frame)
+            self._handle_ProtocolHeaderFrame(frame)
         elif isinstance(frame, protocol.HeartbeatFrame):  # pragma: no cover
             logger.debug(
                 'Receiving HeartbeatFrame [channel_id:%s]',

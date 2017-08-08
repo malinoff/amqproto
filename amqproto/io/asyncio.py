@@ -30,17 +30,18 @@ class Channel(SansioChannel):
     def _receive_method(self, method):
         self._reply_future.set_result(method)
 
-    def _process_message(self):
-        message, self._message = self._message, None
-        if self._get_future is not None:
-            # BasicGet
-            self._get_future.set_result(message)
-        elif isinstance(message.delivery_info, protocol.BasicReturn):
-            # BasicReturn
-            self._returned_messages.put_nowait(message)
-        else:
-            # BasicConsume
-            self._consumed_messages.put_nowait(message)
+    async def handle_frame(self, frame):
+        result, message = super().handle_frame(frame)
+        if message is not None:
+            if self._get_future is not None:
+                # BasicGet
+                self._get_future.set_result(message)
+            elif isinstance(message.delivery_info, protocol.BasicReturn):
+                # BasicReturn
+                await self._returned_messages.put(message)
+            else:
+                # BasicConsume
+                await self._consumed_messages.put(message)
 
     async def _flush_outbound(self, has_reply):
         self.writer.write(self.data_to_send())
@@ -305,9 +306,12 @@ class Connection(SansioConnection):
             if not chunk:
                 break
             data += chunk
-            frames = self.receive_frames(data)
-            for frame in frames:
-                self.handle_frame(frame)
+            for frame in self.receive_frames(data):
+                if frame.channel_id != 0:
+                    channel = self.get_channel(frame.channel_id)
+                    await channel.handle_frame(frame)
+                else:
+                    self.handle_frame(frame)
                 await self._flush_outbound()
                 del data[:frame.size]
 
