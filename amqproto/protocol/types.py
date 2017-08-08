@@ -60,6 +60,10 @@ class BaseType:
     _STRUCT_FMT = None
     _STRUCT_SIZE = None
 
+    @property
+    def size(self):
+        return self._STRUCT_SIZE
+
     def pack(self):
         return struct.pack('!' + self._STRUCT_FMT, self)
 
@@ -364,6 +368,10 @@ class Decimal(BaseType, decimal.Decimal):
             return value
         raise ValueError('bad decimal value: {!r}'.format(value))
 
+    @property
+    def size(self):
+        return UnsignedByte._STRUCT_SIZE + UnsignedLong._STRUCT_SIZE
+
     def pack(self):
         sign, digits, exponent = self.as_tuple()
         value = 0
@@ -404,6 +412,10 @@ class ShortStr(BaseType, bytes):
             )
         return value
 
+    @property
+    def size(self):
+        return UnsignedByte._STRUCT_SIZE + len(self)
+
     def pack(self):
         return UnsignedByte(len(self)).pack() + self
 
@@ -438,6 +450,10 @@ class LongStr(BaseType, bytes):
             )
         return value
 
+    @property
+    def size(self):
+        return UnsignedLong._STRUCT_SIZE + len(self)
+
     def pack(self):
         return UnsignedLong(len(self)).pack() + self
 
@@ -455,6 +471,8 @@ Longstr = LongStr
 
 class Void(BaseType):
     TABLE_LABEL = b'V'
+
+    size = 0
 
     def __init__(self, value=None):
         assert value is None
@@ -490,6 +508,10 @@ class ByteArray(BaseType, bytes):
             ))
         return value
 
+    @property
+    def size(self):
+        return UnsignedLong._STRUCT_SIZE + len(self)
+
     def pack(self):
         return UnsignedLong(len(self)).pack() + self
 
@@ -504,6 +526,8 @@ class ByteArray(BaseType, bytes):
 
 class Timestamp(datetime.datetime, BaseType):
     TABLE_LABEL = b'T'
+
+    size = UnsignedLongLong._STRUCT_SIZE
 
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and isinstance(args[0], datetime.datetime):
@@ -547,6 +571,14 @@ class Table(BaseType, collections.abc.MutableMapping):
                 value = _py_type_to_amqp_type(value)
             validated[key] = value
         self._value = validated
+
+    @property
+    def size(self):
+        values_size = sum(1 +  # label
+                          key.size +
+                          value.size
+                          for key, value in self._value.items())
+        return UnsignedLong._STRUCT_SIZE + values_size
 
     def pack(self):
         stream = io.BytesIO()
@@ -619,6 +651,11 @@ class Array(BaseType, collections.abc.MutableSequence):
                 item = _py_type_to_amqp_type(item)
             validated.append(item)
         self._value = validated
+
+    @property
+    def size(self):
+        values_size = sum(1 + value.size for value in self._value)
+        return UnsignedLong._STRUCT_SIZE + values_size
 
     def pack(self):
         stream = io.BytesIO()

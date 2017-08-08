@@ -4,7 +4,7 @@ amqproto.protocol.methods
 
 Implementation of AMQP methods.
 
-This file was generated 2017-08-02 from
+This file was generated 2017-08-08 from
 /codegen/amqp0-9-1.extended.xml.
 
 """
@@ -36,6 +36,11 @@ class Method:
             else:
                 value = amqptype(value)
             self.values[name] = value
+
+        values_size = sum(value.size for value in self.values.values())
+        self.size = (types.UnsignedShort._STRUCT_SIZE +  # class_id
+                     types.UnsignedShort._STRUCT_SIZE +  # method_id
+                     values_size)
 
     @classmethod
     def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):

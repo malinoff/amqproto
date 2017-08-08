@@ -33,7 +33,11 @@ class Frame:
     payload_cls = None
     """Payload implementation, subclasses must provide this."""
 
-    METADATA_SIZE = (  # frame_type
+    size = None
+    """Frame size in bytes."""
+
+    METADATA_SIZE = (
+        # frame_type
         types.UnsignedByte._STRUCT_SIZE +
         # channel_id
         types.UnsignedShort._STRUCT_SIZE +
@@ -48,6 +52,8 @@ class Frame:
     def __init__(self, channel_id, payload):
         self.channel_id = channel_id
         self.payload = payload
+
+        self.size = self.METADATA_SIZE + self.payload.size
 
     @classmethod
     def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
@@ -96,12 +102,16 @@ class Frame:
         types.UnsignedByte(FRAME_END).to_bytestream(stream)
 
     def __eq__(self, other):
-        return (self.channel_id == other.channel_id and
+        return (self.size == other.size and
+                self.channel_id == other.channel_id and
                 self.payload == other.payload)
 
 
 class Payload:
     """Base class for all payload classes."""
+
+    size = None
+    """Payload size in bytes. Subclasses must provide this attribute."""
 
     @classmethod
     def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
@@ -130,11 +140,28 @@ class ContentHeaderPayload(Payload):
     def __init__(self, class_id, body_size, properties, weight=0):
         self.class_id = class_id
         self.body_size = body_size
-        self.properties = properties
         self.weight = weight
 
+        class_properties = PROPERTIES_BY_CLASS_ID[self.class_id]
+        for name, value in properties.items():
+            if value is not None:
+                if not isinstance(value, types.BaseType):
+                    amqptype = class_properties[name]
+                    properties[name] = amqptype(value)
+        self.properties = properties
+
+        properties_size = sum(value.size
+                              for value in self.properties.values()
+                              if value is not None)
+        self.size = (types.UnsignedShort._STRUCT_SIZE +  # class_id
+                     types.UnsignedShort._STRUCT_SIZE +  # weight
+                     types.UnsignedLongLong._STRUCT_SIZE +  # body_size
+                     types.UnsignedShort._STRUCT_SIZE +  # property_flags
+                     properties_size)
+
     def __eq__(self, other):
-        return (self.class_id == other.class_id and
+        return (self.size == other.size and
+                self.class_id == other.class_id and
                 self.body_size == other.body_size and
                 self.weight == other.weigth and
                 self.properties == other.properties)
@@ -172,13 +199,10 @@ class ContentHeaderPayload(Payload):
         property_flags = 0
         bitshift = 15
 
-        for name, val in self.properties.items():
-            if val is not None:
-                if not isinstance(val, types.BaseType):
-                    amqptype = class_properties[name]
-                    val = amqptype(val)
+        for name, value in self.properties.items():
+            if value is not None:
                 property_flags |= (1 << bitshift)
-                properties += val.pack()
+                properties += value.pack()
             bitshift -= 1
 
         types.UnsignedShort(property_flags).to_bytestream(stream)
@@ -197,8 +221,10 @@ class ContentBodyPayload(Payload):
     def __init__(self, data):
         self.data = data
 
+        self.size = len(data)
+
     def __eq__(self, other):
-        return self.data == other.data
+        return self.size == other.size and self.data == other.data
 
     @classmethod
     def from_bytestream(cls, stream, body_chunk_size):
@@ -221,8 +247,10 @@ class HeartbeatPayload(Payload):
     def __init__(self):
         self.data = b''
 
+        self.size = 0
+
     def __eq__(self, other):
-        return self.data == other.data
+        return self.size == other.size and self.data == other.data
 
     @classmethod
     def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
@@ -251,6 +279,8 @@ class ProtocolHeaderPayload(Payload):
         self.protocol_major = protocol_major
         self.protocol_minor = protocol_minor
         self.protocol_revision = protocol_revision
+
+        self.size = 8
 
     def __eq__(self, other):
         return all(

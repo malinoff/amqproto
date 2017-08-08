@@ -130,7 +130,6 @@ class Connection:
             self._heartbeater.update_received_time()
         stream = io.BytesIO(data)
         build_frame = protocol.Frame.from_bytestream
-        offset = 0
         data_length = len(data)
         while stream.tell() != data_length:
             current_position = stream.tell()
@@ -141,17 +140,16 @@ class Connection:
                 stream.seek(current_position)
                 break
             # Check if frame size fits into the negotiated value.
-            if (stream.tell() - offset) > self.properties['frame_max']:
+            if frame.size > self.properties['frame_max']:
                 if isinstance(frame, protocol.MethodFrame):
                     class_id, method_id = frame.payload.method_type
                 else:
                     class_id, method_id = 0, 0
                 reply_text = 'received frame is too large ({} bytes)'.format(
-                    stream.tell()
+                    frame.size
                 )
                 raise protocol.FrameError(reply_text, class_id, method_id)
-            offset += stream.tell()
-            yield frame, stream.tell() - current_position
+            yield frame
 
     def handle_frame(self, frame):
         channel_id = frame.channel_id

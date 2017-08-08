@@ -4,7 +4,7 @@ amqproto.protocol.errors
 
 AMQP errors classes.
 
-This file was generated 2017-08-02 from
+This file was generated 2017-08-08 from
 /codegen/amqp0-9-1.extended.xml.
 
 """

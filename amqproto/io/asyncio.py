@@ -306,10 +306,10 @@ class Connection(SansioConnection):
                 break
             data += chunk
             frames = self.receive_frames(data)
-            for frame, frame_size in frames:
+            for frame in frames:
                 self.handle_frame(frame)
                 await self._flush_outbound()
-                data = data[frame_size:]
+                del data[:frame.size]
 
     async def __aenter__(self):
         await self.open()
