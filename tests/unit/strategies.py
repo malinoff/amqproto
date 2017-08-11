@@ -1,7 +1,6 @@
 import functools
 
 import hypothesis.strategies as hs
-import hypothesis.extra.datetime as hed
 
 from amqproto.protocol import errors
 import amqproto.protocol.types as at
@@ -65,7 +64,7 @@ short_strs = st(hs.text().map(utf8encode), at.ShortStr)
 long_strs = st(hs.text().map(utf8encode), at.LongStr)
 voids = hs.just(None)
 bytearrays = st(hs.binary(), at.ByteArray)
-timestamps = st(hed.datetimes(timezones=[]), at.Timestamp)
+timestamps = st(hs.datetimes(), at.Timestamp)
 
 types = (bools | signed_bytes | unsigned_bytes |
          signed_shorts | unsigned_shorts |

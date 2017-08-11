@@ -5,4 +5,4 @@ exclude_lines =
     raise NotImplementedError
 
 [run]
-include = amqproto/io/*
+include = amqproto/*
