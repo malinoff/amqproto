@@ -100,10 +100,11 @@ async def test_can_publish_and_get_messages(channel):
 @pytest.mark.asyncio(forbid_global_loop=True)
 async def test_can_produce_and_consume_messages(channel):
     await channel.queue_declare('hello')
-    message = protocol.BasicMessage(b'hello world')
-    await channel.basic_publish(message, exchange='', routing_key='hello')
     reply = await channel.basic_consume('hello')
     consumer_tag = reply.consumer_tag
+
+    message = protocol.BasicMessage(b'hello world')
+    await channel.basic_publish(message, exchange='', routing_key='hello')
 
     async for received_message in channel.consumed_messages():
         assert received_message.body == b'hello world'
