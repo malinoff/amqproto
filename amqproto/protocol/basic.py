@@ -7,6 +7,7 @@ Implementation of AMQP Basic class.
 
 import enum
 import datetime
+import functools
 import collections
 
 import attr
@@ -32,6 +33,37 @@ PROPERTIES = collections.OrderedDict((
 ))
 
 
+@functools.singledispatch
+def _py_type_to_amqp_type(value):
+    return value
+
+
+@_py_type_to_amqp_type.register(str)
+@_py_type_to_amqp_type.register(bytes)
+def _py_type_to_amqp_str_bytes(value):
+    return types.Shortstr(value)
+
+
+@_py_type_to_amqp_type.register(int)
+def _py_type_to_amqp_int(value):
+    return types.Octet(value)
+
+
+@_py_type_to_amqp_type.register(dict)
+def _py_type_to_amqp_dict(value):
+    return types.Table(value)
+
+
+@_py_type_to_amqp_type.register(datetime.datetime)
+def _py_type_to_amqp_datetime(value):
+    return types.Timestamp(value)
+
+
+@_py_type_to_amqp_type.register(type(None))
+def _py_type_to_amqp_none(value):
+    return None
+
+
 class DeliveryMode(enum.Enum):
     """Delivery modes for Basic message."""
     NonPersistent = 1
@@ -40,56 +72,40 @@ class DeliveryMode(enum.Enum):
 
 @attr.s(slots=True)
 class BasicMessage:
-    DeliveryMode = DeliveryMode
-    PROPERTIES = PROPERTIES
-
-    body = attr.ib()
+    body = attr.ib(default=b'')
     body_size = attr.ib(default=None)
     # Special attribute containing information
     # received by BasicDeliver/BasicGetOk/etc
-    delivery_info = attr.ib(default=None)
-    content_type = attr.ib(default='application/octet-stream')
-    content_encoding = attr.ib(default='utf-8')
-    headers = attr.ib(default=None)
-    delivery_mode = attr.ib(default=None)
-    priority = attr.ib(default=None)
-    correlation_id = attr.ib(default=None)
-    reply_to = attr.ib(default=None)
-    expiration = attr.ib(default=None)
-    message_id = attr.ib(default=None)
-    timestamp = attr.ib(default=attr.Factory(datetime.datetime.utcnow))
-    type = attr.ib(default=None)
-    user_id = attr.ib(default=None)
-    app_id = attr.ib(default=None)
+    delivery_info = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    # Basic properties
+    content_type = attr.ib(default='application/octet-stream',
+                           convert=_py_type_to_amqp_type)
+    content_encoding = attr.ib(default='utf-8',
+                               convert=_py_type_to_amqp_type)
+    headers = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    delivery_mode = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    priority = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    correlation_id = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    reply_to = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    expiration = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    message_id = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    timestamp = attr.ib(default=attr.Factory(datetime.datetime.utcnow),
+                        convert=_py_type_to_amqp_type)
+    type = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    user_id = attr.ib(default=None, convert=_py_type_to_amqp_type)
+    app_id = attr.ib(default=None, convert=_py_type_to_amqp_type)
 
     # A convenient attribute to gather all properties in a single place
-    properties = attr.ib(default=None, repr=False, init=False)
+    @property
+    def properties(self):
+        def basic_property(attrib, value):
+            return attrib.name not in ['body', 'body_size', 'delivery_info']
+        return attr.asdict(
+            self, filter=basic_property, dict_factory=collections.OrderedDict
+        )
 
     def __attrs_post_init__(self):
         self.body_size = len(self.body)
-
-        self.properties = collections.OrderedDict((
-            ('content_type', self.content_type),
-            ('content_encoding', self.content_encoding),
-            ('headers', self.headers),
-            ('delivery_mode', self.delivery_mode),
-            ('priority', self.priority),
-            ('correlation_id', self.correlation_id),
-            ('reply_to', self.reply_to),
-            ('expiration', self.expiration),
-            ('message_id', self.message_id),
-            ('timestamp', self.timestamp),
-            ('type', self.type),
-            ('user_id', self.user_id),
-            ('app_id', self.app_id),
-        ))
-        for key in self.properties:
-            value = self.properties[key]
-            if not isinstance(value, types.BaseType) and value is not None:
-                value = self.PROPERTIES[key](value)
-                self.properties[key] = value
-
-        self.__dict__.update(**self.properties)
 
     @property
     def decoded_body(self):

@@ -140,15 +140,8 @@ class ContentHeaderPayload(Payload):
     def __init__(self, class_id, body_size, properties, weight=0):
         self.class_id = class_id
         self.body_size = body_size
-        self.weight = weight
-
-        class_properties = PROPERTIES_BY_CLASS_ID[self.class_id]
-        for name, value in properties.items():
-            if value is not None:
-                if not isinstance(value, types.BaseType):
-                    amqptype = class_properties[name]
-                    properties[name] = amqptype(value)
         self.properties = properties
+        self.weight = weight
 
         properties_size = sum(value.size
                               for value in self.properties.values()
@@ -189,8 +182,6 @@ class ContentHeaderPayload(Payload):
         return cls(class_id, body_size, properties, weight)
 
     def to_bytestream(self, stream: io.BytesIO):
-        class_properties = PROPERTIES_BY_CLASS_ID[self.class_id]
-
         types.UnsignedShort(self.class_id).to_bytestream(stream)
         types.UnsignedShort(self.weight).to_bytestream(stream)
         types.UnsignedLongLong(self.body_size).to_bytestream(stream)

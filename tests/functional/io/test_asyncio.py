@@ -66,13 +66,6 @@ async def test_can_declare_queue(channel):
 
 
 @pytest.mark.asyncio(forbid_global_loop=True)
-async def test_can_publish_message_on_exchange(channel):
-    msg = b'This is a test message'
-    message = protocol.BasicMessage(msg)
-    await channel.basic_publish(message)
-
-
-@pytest.mark.asyncio(forbid_global_loop=True)
 async def test_can_bind_queue_to_exchange(channel):
     exchange_name = 'amqproto_test'
     queue_name = 'amqproto_test_q'
@@ -96,7 +89,7 @@ async def test_can_bind_queue_to_exchange(channel):
 
 
 @pytest.mark.asyncio(forbid_global_loop=True)
-async def test_can_get_messages(channel):
+async def test_can_publish_and_get_messages(channel):
     await channel.queue_declare('hello')
     message = protocol.BasicMessage(b'hello world')
     await channel.basic_publish(message, exchange='', routing_key='hello')
@@ -105,20 +98,17 @@ async def test_can_get_messages(channel):
 
 
 @pytest.mark.asyncio(forbid_global_loop=True)
-async def test_produce_and_consume(channel):
+async def test_can_produce_and_consume_messages(channel):
     await channel.queue_declare('hello')
     message = protocol.BasicMessage(b'hello world')
-    print(1, channel._consumed_messages)
     await channel.basic_publish(message, exchange='', routing_key='hello')
     reply = await channel.basic_consume('hello')
-    print(2, channel._consumed_messages)
     consumer_tag = reply.consumer_tag
 
     async for received_message in channel.consumed_messages():
         assert received_message.body == b'hello world'
         assert received_message.delivery_info.routing_key == b'hello'
         break
-    print(3, channel._consumed_messages)
 
     assert channel._consumed_messages.empty()
 

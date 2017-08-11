@@ -4,9 +4,8 @@ import logging
 import collections
 import collections.abc
 
-from . import protocol
-
 from . import fsm
+from . import protocol
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +117,8 @@ class Channel:
             self._channel_id
         )
 
-        self._message.__dict__.update(**frame.payload.properties)
+        for name, value in frame.payload.properties.items():
+            setattr(self._message, name, value)
         self._message.body_size = frame.payload.body_size
         if self._message.body_size == 0:
             message, self._message = self._message, None
