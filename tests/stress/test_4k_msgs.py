@@ -11,10 +11,12 @@ async def go(loop):
             for i in range(1, MSGS + 1):
                 await chan.basic_publish(BasicMessage(b'hello, world'), routing_key='hello')
 
-            fut, consumer_tag = await chan.basic_consume('hello')
-            for i in range(1, MSGS + 1):
-                fut, message = await fut
+            reply = await chan.basic_consume('hello')
+            consumer_tag = reply.consumer_tag
+            async for message in chan.consumed_messages():
                 await chan.basic_ack(message.delivery_info.delivery_tag)
+                if message.delivery_info.delivery_tag == MSGS:
+                    break
             await chan.basic_cancel(consumer_tag)
 
 loop = asyncio.get_event_loop()

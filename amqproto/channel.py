@@ -74,7 +74,7 @@ class Channel:
         }
 
     def _receive_method(self, method):
-        print('_receive_method called with', method)
+        pass
 
     def data_to_send(self):
         data = self._buffer.getvalue()
@@ -93,7 +93,6 @@ class Channel:
         return has_reply
 
     def handle_frame(self, frame):
-        print('handle_frame called with', frame)
         if isinstance(frame, protocol.MethodFrame):
             return self.handle_method_frame(frame)
         elif isinstance(frame, protocol.ContentHeaderFrame):
