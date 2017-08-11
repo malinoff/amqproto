@@ -54,7 +54,7 @@ def ready_channel(ready_connection):
     payload = protocol.ChannelOpenOK()
     frame = protocol.MethodFrame(channel._channel_id, payload)
 
-    ready_connection.handle_frame(frame)
+    channel.handle_frame(frame)
     return channel
 
 
