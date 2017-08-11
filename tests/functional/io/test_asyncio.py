@@ -101,19 +101,17 @@ async def test_can_publish_and_get_messages(channel):
 async def test_can_produce_and_consume_messages(channel):
     await channel.queue_declare('hello')
     message = protocol.BasicMessage(b'hello world')
-    print(1, channel._consumed_messages)
     await channel.basic_publish(message, exchange='', routing_key='hello')
-    print(2, channel._consumed_messages)
     reply = await channel.basic_consume('hello')
-    print(3, channel._consumed_messages)
     consumer_tag = reply.consumer_tag
 
     async for received_message in channel.consumed_messages():
         assert received_message.body == b'hello world'
         assert received_message.delivery_info.routing_key == b'hello'
+
+        await channel.basic_ack(received_message.delivery_info.delivery_tag)
         break
 
-    print(4, channel._consumed_messages)
     assert channel._consumed_messages.empty()
 
     await channel.basic_cancel(consumer_tag)
