@@ -3,6 +3,3 @@ exclude_lines =
     pragma: no cover
     def __repr__
     raise NotImplementedError
-
-[run]
-include = amqproto/*

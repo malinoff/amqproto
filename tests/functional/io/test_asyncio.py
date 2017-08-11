@@ -154,7 +154,9 @@ async def test_mandatory_flag_on_existing_queue(channel):
     await channel.basic_publish(
         message, routing_key='amqproto_test_q', mandatory=True
     )
-    await asyncio.sleep(0.1, loop=channel.loop)
+    # Make sure there's no danglign messages in the queue
+    received_message = await channel.basic_get(queue_name)
+    assert received_message.body == message.body
     assert channel._returned_messages.empty()
 
     # cleanup
