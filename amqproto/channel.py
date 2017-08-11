@@ -171,7 +171,7 @@ class Channel:
             method.class_id,
             method.method_id,
         )
-        self._send_ChannelCloseOK(exc)
+        return self._send_ChannelCloseOK(exc)
 
     def _send_ChannelCloseOK(self, exc):
         self._fsm.terminate()

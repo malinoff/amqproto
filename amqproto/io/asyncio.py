@@ -19,37 +19,38 @@ class Channel(SansioChannel):
         self.loop = loop
         self.writer = writer
         # Used to synchronize AMQP methods with OK replies
-        self._reply_future = None
-
-        self._get_future = None
-        self._ack_future = None
+        self._reply_queue = asyncio.Queue(loop=self.loop)
+        # Used to synchronize basic_get call with the message delivery
+        self._get_queue = asyncio.Queue(loop=self.loop)
+        # Used to await the broker acknowledgments in publisher confirms mode
+        self._ack_event = None
 
         self._consumed_messages = asyncio.Queue(loop=self.loop)
         self._returned_messages = asyncio.Queue(loop=self.loop)
 
-    def _receive_method(self, method):
-        self._reply_future.set_result(method)
+    async def _receive_method(self, method):
+        await self._reply_queue.put(method)
 
     async def handle_frame(self, frame):
-        result, message = super().handle_frame(frame)
+        coroutine, message = super().handle_frame(frame)
+        if coroutine is not None:
+            await coroutine
         if message is not None:
-            if self._get_future is not None:
-                # BasicGet
-                self._get_future.set_result(message)
+            if isinstance(message.delivery_info, protocol.BasicGetOK):
+                await self._get_queue.put(message)
             elif isinstance(message.delivery_info, protocol.BasicReturn):
-                # BasicReturn
                 await self._returned_messages.put(message)
-            else:
-                # BasicConsume
+            elif isinstance(message.delivery_info, protocol.BasicDeliver):
                 await self._consumed_messages.put(message)
 
     async def _flush_outbound(self, has_reply):
         self.writer.write(self.data_to_send())
-        if has_reply:
-            future = self._reply_future = self.loop.create_future()
         await self.writer.drain()
         if has_reply:
-            return await future
+            reply = await self._reply_queue.get()
+            if isinstance(reply, protocol.AMQPError):
+                raise reply
+            return reply
 
     async def __aenter__(self):
         await self.open()
@@ -69,25 +70,23 @@ class Channel(SansioChannel):
         has_reply = super().open()
         return await self._flush_outbound(has_reply)
 
-    def _receive_ChannelOpenOK(self, method):
+    async def _receive_ChannelOpenOK(self, method):
         super()._receive_ChannelOpenOK(method)
-        self._reply_future.set_result(method)
+        await self._reply_queue.put(method)
 
     @override_signature(SansioChannel.close)
     async def close(self, *args, **kwargs):
         if not self.closed:
             has_reply = super().close(*args, **kwargs)
-            self._reply_future = self.loop.create_future()
             await self._flush_outbound(has_reply)
-            await self._reply_future
 
-    def _receive_ChannelCloseOK(self, method):
+    async def _receive_ChannelCloseOK(self, method):
         super()._receive_ChannelCloseOK(method)
-        self._reply_future.set_result(method)
+        await self._reply_queue.put(method)
 
-    def _send_ChannelCloseOK(self, exc):
+    async def _send_ChannelCloseOK(self, exc):
         super()._send_ChannelCloseOK(exc)
-        self._reply_future.set_exception(exc)
+        await self._reply_queue.put(exc)
 
     @override_signature(SansioChannel.flow)
     async def flow(self, *args, **kwargs):
@@ -149,18 +148,18 @@ class Channel(SansioChannel):
         has_reply = super().basic_consume(*args, **kwargs)
         return await self._flush_outbound(has_reply)
 
-    def _receive_BasicConsumeOK(self, method):
+    async def _receive_BasicConsumeOK(self, method):
         super()._receive_BasicConsumeOK(method)
-        self._reply_future.set_result(method)
+        await self._reply_queue.put(method)
 
     @override_signature(SansioChannel.basic_cancel)
     async def basic_cancel(self, *args, **kwargs):
         has_reply = super().basic_cancel(*args, **kwargs)
         return await self._flush_outbound(has_reply)
 
-    def _receive_BasicCancelOK(self, method):
+    async def _receive_BasicCancelOK(self, method):
         super()._receive_BasicCancelOK(method)
-        self._reply_future.set_result(method)
+        await self._reply_queue.put(method)
 
     @override_signature(SansioChannel.basic_publish)
     async def basic_publish(self, *args, **kwargs):
@@ -170,29 +169,28 @@ class Channel(SansioChannel):
     @override_signature(SansioChannel.basic_get)
     async def basic_get(self, *args, **kwargs):
         has_reply = super().basic_get(*args, **kwargs)
-        reply = await self._flush_outbound(has_reply)
-        if reply is not None:
-            return await self._get_future
+        await self._flush_outbound(has_reply)
+        return await self._get_queue.get()
 
-    def _receive_BasicGetOK(self, method):
+    async def _receive_BasicGetOK(self, method):
         super()._receive_BasicGetOK(method)
-        self._get_future = self.loop.create_future()
-        self._reply_future.set_result(self._get_future)
+        await self._reply_queue.put(method)
 
-    def _receive_BasicGetEmpty(self, method):
+    async def _receive_BasicGetEmpty(self, method):
         super()._receive_BasicGetEmpty(method)
-        self._reply_future.set_result(None)
+        await self._reply_queue.put(method)
+        await self._get_queue.put(None)
 
     @override_signature(SansioChannel.basic_ack)
     async def basic_ack(self, *args, **kwargs):
         has_reply = super().basic_ack(*args, **kwargs)
         return await self._flush_outbound(has_reply)
 
-    def _receive_BasicAck(self, method):
+    async def _receive_BasicAck(self, method):
         super()._receive_BasicAck(method)
         if not self._unconfirmed_set:
-            self._ack_future.set_result(True)
-            self._ack_future = self.loop.create_future()
+            self._ack_event.set()
+            self._ack_event = asyncio.Event(loop=self.loop)
 
     @override_signature(SansioChannel.basic_reject)
     async def basic_reject(self, *args, **kwargs):
@@ -231,6 +229,7 @@ class Channel(SansioChannel):
 
     @override_signature(SansioChannel.confirm_select)
     async def confirm_select(self, *args, **kwargs):
+        self._ack_event = asyncio.Event(loop=self.loop)
         has_reply = super().confirm_select(*args, **kwargs)
         return await self._flush_outbound(has_reply)
 
@@ -251,7 +250,7 @@ class Channel(SansioChannel):
             yield message
 
     async def wait_for_confirmations(self):
-        await self._ack_future
+        await self._ack_event.wait()
 
 
 class Connection(SansioConnection):
@@ -276,13 +275,13 @@ class Connection(SansioConnection):
         }
         self.reader = self.writer = None
         # Used to synchronize AMQP methods with OK replies
-        self._reply_future = None
+        self._reply_queue = asyncio.Queue(loop=self.loop)
 
     def Channel(self, *args, **kwargs):
         return Channel(*args, loop=self.loop, writer=self.writer, **kwargs)
 
-    def _receive_method(self, method):
-        self._reply_future.set_result(method)
+    async def _receive_method(self, method):
+        await self._reply_queue.put(method)
 
     async def open(self):
         self.reader, self.writer = await asyncio.open_connection(
@@ -290,13 +289,12 @@ class Connection(SansioConnection):
         )
         self.initiate_connection()
         await self._flush_outbound()
-        future = self._reply_future = self.loop.create_future()
         self._communicate_task = self.loop.create_task(self._communicate())
-        await future
+        await self._reply_queue.get()
 
-    def _receive_ConnectionOpenOK(self, method):
+    async def _receive_ConnectionOpenOK(self, method):
         super()._receive_ConnectionOpenOK(method)
-        self._reply_future.set_result(method)
+        await self._reply_queue.put(method)
 
     async def _communicate(self):
         data = bytearray()
@@ -307,11 +305,13 @@ class Connection(SansioConnection):
                 break
             data += chunk
             for frame in self.receive_frames(data):
+                handler = self.handle_frame
                 if frame.channel_id != 0:
                     channel = self.get_channel(frame.channel_id)
-                    await channel.handle_frame(frame)
-                else:
-                    self.handle_frame(frame)
+                    handler = channel.handle_frame
+                coroutine = handler(frame)
+                if coroutine is not None:
+                    await coroutine
                 await self._flush_outbound()
                 del data[:frame.size]
 
@@ -321,15 +321,14 @@ class Connection(SansioConnection):
 
     async def close(self, reply_code, reply_text, class_id=0, method_id=0):
         if not self.closed:
-            future = self._reply_future = self.loop.create_future()
             super().close(reply_code, reply_text, class_id, method_id)
             await self._flush_outbound()
-            await future
-            self._communicate_task.cancel()
-            self.writer.close()
+            await self._reply_queue.get()
+        self._communicate_task.cancel()
+        self.writer.close()
 
-    def _receive_ConnectionCloseOK(self, method):
-        self._reply_future.set_result(method)
+    async def _receive_ConnectionCloseOK(self, method):
+        await self._reply_queue.put(method)
 
     async def __aexit__(self, exc_type, exc, tb):
         if not self.closed:
