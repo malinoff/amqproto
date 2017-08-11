@@ -9,6 +9,8 @@ import enum
 import datetime
 import collections
 
+import attr
+
 from . import types
 
 __all__ = ['BasicMessage']
@@ -36,56 +38,50 @@ class DeliveryMode(enum.Enum):
     Persistent = 2
 
 
+@attr.s(slots=True)
 class BasicMessage:
     DeliveryMode = DeliveryMode
     PROPERTIES = PROPERTIES
 
-    # pylint: disable=unused-variable,too-many-locals,redefined-builtin
-    def __init__(self, body=b'', *,
-                 delivery_info=None,
-                 body_size: int=None,
-                 content_type: str='application/octet-stream',
-                 content_encoding: str='utf-8',
-                 headers: dict=None,
-                 delivery_mode: DeliveryMode=None,
-                 priority: int=None,
-                 correlation_id: str=None,
-                 reply_to: str=None,
-                 expiration: str=None,
-                 message_id: str=None,
-                 timestamp: datetime.datetime=None,
-                 type: str=None,
-                 user_id: str=None,
-                 app_id: str=None):
+    body = attr.ib()
+    body_size = attr.ib(default=None)
+    # Special attribute containing information
+    # received by BasicDeliver/BasicGetOk/etc
+    delivery_info = attr.ib(default=None)
+    content_type = attr.ib(default='application/octet-stream')
+    content_encoding = attr.ib(default='utf-8')
+    headers = attr.ib(default=None)
+    delivery_mode = attr.ib(default=None)
+    priority = attr.ib(default=None)
+    correlation_id = attr.ib(default=None)
+    reply_to = attr.ib(default=None)
+    expiration = attr.ib(default=None)
+    message_id = attr.ib(default=None)
+    timestamp = attr.ib(default=attr.Factory(datetime.datetime.utcnow))
+    type = attr.ib(default=None)
+    user_id = attr.ib(default=None)
+    app_id = attr.ib(default=None)
 
-        if not isinstance(body, bytes):
-            body = body.encode(content_encoding)
-        if timestamp is None:
-            timestamp = datetime.datetime.utcnow()
+    # A convenient attribute to gather all properties in a single place
+    properties = attr.ib(default=None, repr=False, init=False)
 
-        # Special attribute containing information
-        # received by BasicDeliver/BasicGetOk/etc
-        self.delivery_info = delivery_info
-
-        self.body = body
-        if body_size is None:
-            body_size = len(body)
-        self.body_size = body_size
+    def __attrs_post_init__(self):
+        self.body_size = len(self.body)
 
         self.properties = collections.OrderedDict((
-            ('content_type', content_type),
-            ('content_encoding', content_encoding),
-            ('headers', headers),
-            ('delivery_mode', delivery_mode),
-            ('priority', priority),
-            ('correlation_id', correlation_id),
-            ('reply_to', reply_to),
-            ('expiration', expiration),
-            ('message_id', message_id),
-            ('timestamp', timestamp),
-            ('type', type),
-            ('user_id', user_id),
-            ('app_id', app_id),
+            ('content_type', self.content_type),
+            ('content_encoding', self.content_encoding),
+            ('headers', self.headers),
+            ('delivery_mode', self.delivery_mode),
+            ('priority', self.priority),
+            ('correlation_id', self.correlation_id),
+            ('reply_to', self.reply_to),
+            ('expiration', self.expiration),
+            ('message_id', self.message_id),
+            ('timestamp', self.timestamp),
+            ('type', self.type),
+            ('user_id', self.user_id),
+            ('app_id', self.app_id),
         ))
         for key in self.properties:
             value = self.properties[key]
@@ -94,7 +90,6 @@ class BasicMessage:
                 self.properties[key] = value
 
         self.__dict__.update(**self.properties)
-    # pylint: enable=unused-variable,too-many-locals
 
     @property
     def decoded_body(self):
