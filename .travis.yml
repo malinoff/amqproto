@@ -12,7 +12,7 @@ install:
 
 script:
 - pytest -l --cov=amqproto --cov-report=term-missing:skip-covered --cov-config=tests/unit/coveragerc tests/unit
-- pytest -l --cov=amqproto --cov-report=term-missing:skip-covered --cov-config=tests/functional/coveragerc tests/functional
+- pytest -l --cov=amqproto --cov-report=term-missing:skip-covered --cov-config=tests/functional/coveragerc tests/functional -s
 
 services:
 - rabbitmq  # required by functional tests
