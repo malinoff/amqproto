@@ -11,22 +11,18 @@ __all__ = ['Connection']
 
 class Channel(SansioChannel):
 
-    def __init__(self, *args,
-                 loop: asyncio.BaseEventLoop,
-                 writer,
-                 **kwargs):
+    def __init__(self, *args, writer, **kwargs):
         super().__init__(*args, **kwargs)
-        self.loop = loop
         self.writer = writer
         # Used to synchronize AMQP methods with OK replies
-        self._reply_queue = asyncio.Queue(loop=self.loop)
+        self._reply_queue = asyncio.Queue()
         # Used to synchronize basic_get call with the message delivery
-        self._get_queue = asyncio.Queue(loop=self.loop)
+        self._get_queue = asyncio.Queue()
         # Used to await the broker acknowledgments in publisher confirms mode
         self._ack_event = None
 
-        self._consumed_messages = asyncio.Queue(loop=self.loop)
-        self._returned_messages = asyncio.Queue(loop=self.loop)
+        self._consumed_messages = asyncio.Queue()
+        self._returned_messages = asyncio.Queue()
 
     async def _receive_method(self, method):
         await self._reply_queue.put(method)
@@ -190,7 +186,7 @@ class Channel(SansioChannel):
         super()._receive_BasicAck(method)
         if not self._unconfirmed_set:
             self._ack_event.set()
-            self._ack_event = asyncio.Event(loop=self.loop)
+            self._ack_event = asyncio.Event()
 
     @override_signature(SansioChannel.basic_reject)
     async def basic_reject(self, *args, **kwargs):
@@ -229,7 +225,7 @@ class Channel(SansioChannel):
 
     @override_signature(SansioChannel.confirm_select)
     async def confirm_select(self, *args, **kwargs):
-        self._ack_event = asyncio.Event(loop=self.loop)
+        self._ack_event = asyncio.Event()
         has_reply = super().confirm_select(*args, **kwargs)
         return await self._flush_outbound(has_reply)
 
@@ -258,9 +254,8 @@ class Connection(SansioConnection):
     def __init__(self, host='localhost', port=5672, *,
                  limit=_DEFAULT_LIMIT, ssl=None, family=0, proto=0,
                  flags=0, sock=None, local_addr=None, server_hostname=None,
-                 loop: asyncio.BaseEventLoop, **kwargs):
+                 **kwargs):
         super().__init__(**kwargs)
-        self.loop = loop
         self._connect_args = {
             'host': host,
             'port': port,
@@ -275,10 +270,10 @@ class Connection(SansioConnection):
         }
         self.reader = self.writer = None
         # Used to synchronize AMQP methods with OK replies
-        self._reply_queue = asyncio.Queue(loop=self.loop)
+        self._reply_queue = asyncio.Queue()
 
     def Channel(self, *args, **kwargs):
-        return Channel(*args, loop=self.loop, writer=self.writer, **kwargs)
+        return Channel(*args, writer=self.writer, **kwargs)
 
     async def _receive_method(self, method):
         await self._reply_queue.put(method)
@@ -289,7 +284,7 @@ class Connection(SansioConnection):
         )
         self.initiate_connection()
         await self._flush_outbound()
-        self._communicate_task = self.loop.create_task(self._communicate())
+        self._communicate_task = asyncio.ensure_future(self._communicate())
         await self._reply_queue.get()
 
     async def _receive_ConnectionOpenOK(self, method):
