@@ -1,2 +1,0 @@
-transitions>=0.5
-attrs
