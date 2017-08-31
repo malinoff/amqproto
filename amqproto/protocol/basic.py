@@ -105,12 +105,15 @@ class BasicMessage:
         )
 
     def __attrs_post_init__(self):
+        if isinstance(self.body, str):
+            _py_encoding = self.content_encoding.decode('utf-8')
+            self.body = self.body.encode(_py_encoding)
         self.body_size = len(self.body)
 
     @property
     def decoded_body(self):
         body = self.body
         if isinstance(body, bytes):
-            # pylint: disable=no-member
-            body = body.decode(self.content_encoding)
+            _py_encoding = self.content_encoding.decode('utf-8')
+            body = body.decode(_py_encoding)
         return body

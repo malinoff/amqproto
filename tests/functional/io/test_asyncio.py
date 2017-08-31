@@ -171,3 +171,9 @@ async def test_mandatory_flag_on_existing_queue(channel):
 async def test_channel_errors_are_handled_properly(channel):
     with pytest.raises(protocol.AMQPError):
         await channel.queue_unbind('amqproto_test_q', '')
+
+
+@pytest.mark.asyncio()
+async def test_can_publish_strings(channel):
+    message = protocol.BasicMessage('this is a string, not bytes!')
+    await channel.basic_publish(message)
