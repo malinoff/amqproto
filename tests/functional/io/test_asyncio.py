@@ -10,8 +10,8 @@ from amqproto.io.asyncio import Connection
 
 
 @pytest.fixture()
-async def connection(event_loop):
-    async with Connection(loop=event_loop) as connection:
+async def connection():
+    async with Connection() as connection:
         yield connection
 
 
@@ -21,19 +21,26 @@ async def channel(connection):
         yield channel
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
-async def test_can_connect(event_loop):
-    async with Connection(loop=event_loop) as conn:
+@pytest.mark.asyncio()
+async def test_can_connect():
+    async with Connection() as conn:
         pass
 
+@pytest.mark.asyncio()
+async def test_wrong_connection_times_out():
+    # We use management port here to simulate an unresponsible broker
+    with pytest.raises(asyncio.TimeoutError):
+        async with Connection(port=15672, connect_timeout=1):
+            pass
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+
+@pytest.mark.asyncio()
 async def test_can_open_channel(connection):
     async with connection.get_channel() as channel:
         pass
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_can_declare_exchange(channel):
     exchange_name = 'amqproto_test'
     await channel.exchange_declare(exchange_name)
@@ -49,7 +56,7 @@ async def test_can_declare_exchange(channel):
     assert call_rabbit_for_exchange(exchange_name).status_code == 404
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_can_declare_queue(channel):
     queue_name = 'amqproto_test_q'
     await channel.queue_declare(queue_name)
@@ -65,7 +72,7 @@ async def test_can_declare_queue(channel):
     assert call_rabbit_for_queue(queue_name).status_code == 404
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_can_bind_queue_to_exchange(channel):
     exchange_name = 'amqproto_test'
     queue_name = 'amqproto_test_q'
@@ -88,7 +95,7 @@ async def test_can_bind_queue_to_exchange(channel):
     assert not is_queue_bound(queue_name, exchange_name)
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_can_publish_and_get_messages(channel):
     await channel.queue_declare('hello')
     message = protocol.BasicMessage(b'hello world')
@@ -97,7 +104,7 @@ async def test_can_publish_and_get_messages(channel):
     assert received_message.body == b'hello world'
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_can_produce_and_consume_messages(channel):
     await channel.queue_declare('hello')
     reply = await channel.basic_consume('hello')
@@ -118,7 +125,7 @@ async def test_can_produce_and_consume_messages(channel):
     await channel.basic_cancel(consumer_tag)
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_mandatory_flag_handles_undelivered_messages(channel):
     message = protocol.BasicMessage(b'some message')
     exchange_name = 'amqproto_test'
@@ -139,7 +146,7 @@ async def test_mandatory_flag_handles_undelivered_messages(channel):
     await channel.exchange_delete(exchange_name)
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_mandatory_flag_on_existing_queue(channel):
     exchange_name = 'amq.direct'
     queue_name = 'amqproto_test_q'
@@ -160,7 +167,7 @@ async def test_mandatory_flag_on_existing_queue(channel):
     await channel.queue_delete(queue_name)
 
 
-@pytest.mark.asyncio(forbid_global_loop=True)
+@pytest.mark.asyncio()
 async def test_channel_errors_are_handled_properly(channel):
     with pytest.raises(protocol.AMQPError):
         await channel.queue_unbind('amqproto_test_q', '')

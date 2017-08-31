@@ -1,6 +1,8 @@
 import asyncio
 from asyncio.streams import _DEFAULT_LIMIT
 
+from async_timeout import timeout
+
 from amqproto import protocol
 from amqproto.util import override_signature
 from amqproto.channel import Channel as SansioChannel
@@ -254,8 +256,9 @@ class Connection(SansioConnection):
     def __init__(self, host='localhost', port=5672, *,
                  limit=_DEFAULT_LIMIT, ssl=None, family=0, proto=0,
                  flags=0, sock=None, local_addr=None, server_hostname=None,
-                 **kwargs):
+                 connect_timeout=10, **kwargs):
         super().__init__(**kwargs)
+        self._connect_timeout = connect_timeout
         self._connect_args = {
             'host': host,
             'port': port,
@@ -279,13 +282,14 @@ class Connection(SansioConnection):
         await self._reply_queue.put(method)
 
     async def open(self):
-        self.reader, self.writer = await asyncio.open_connection(
-            **self._connect_args
-        )
-        self.initiate_connection()
-        await self._flush_outbound()
-        self._communicate_task = asyncio.ensure_future(self._communicate())
-        await self._reply_queue.get()
+        with timeout(self._connect_timeout):
+            self.reader, self.writer = await asyncio.open_connection(
+                **self._connect_args
+            )
+            self.initiate_connection()
+            await self._flush_outbound()
+            self._communicate_task = asyncio.ensure_future(self._communicate())
+            await self._reply_queue.get()
 
     async def _receive_ConnectionOpenOK(self, method):
         super()._receive_ConnectionOpenOK(method)
