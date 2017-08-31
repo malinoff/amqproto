@@ -4,8 +4,8 @@ from amqproto.io.asyncio import *
 
 MSGS = 4000
 
-async def go(loop):
-    async with Connection(loop=loop) as conn:
+async def go():
+    async with Connection() as conn:
         async with conn.get_channel(1) as chan:
             await chan.queue_declare('hello')
             for i in range(1, MSGS + 1):
@@ -20,5 +20,5 @@ async def go(loop):
             await chan.basic_cancel(consumer_tag)
 
 loop = asyncio.get_event_loop()
-loop.run_until_complete(go(loop))
+loop.run_until_complete(go())
 loop.close()
