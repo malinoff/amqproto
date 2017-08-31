@@ -18,24 +18,18 @@ codestyle-check: codestyle-autoformat
 	git diff --exit-code $(PROJ_NAME)
 	echo "Your code is perfectly styled, congratz! :)"
 
-codestyle-autoformat: codestyle-deps
+codestyle-autoformat: deps
 	$(ISORT) -p $(PROJ_NAME) -ls -sl -rc $(PROJ_NAME)
 	$(PYFORMAT) -r -i $(PROJ_NAME)
 
-codestyle-deps:
-	$(PIP) install -r requirements/codestyle.txt
-
-functionaltests: tests-deps
+functionaltests: deps
 	which docker-compose >/dev/null 2>&1 && docker-compose up -d
 	sleep 2
 	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing --cov-config=tests/functional/coveragerc tests/functional
 	which docker-compose >/dev/null 2>&1 && docker-compose down
 
-unittests: tests-deps
+unittests: deps
 	$(PYTEST) -l --cov=$(PROJ_NAME) --cov-report=term-missing:skip-covered --cov-config=tests/unit/coveragerc tests/unit
 
-tests-deps:
-	$(PIP) install -r requirements/test.txt
-
-devtools:
-	$(PIP) install -r requirements/dev.txt
+deps:
+	$(PIP) install -e .[all]
