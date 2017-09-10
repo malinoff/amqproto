@@ -8,13 +8,15 @@ from amqproto.util import override_signature
 from amqproto.channel import Channel as SansioChannel
 from amqproto.connection import Connection as SansioConnection
 
-__all__ = ['Connection']
+__all__ = ['Connection', 'run']
 
 
+# pylint: disable=arguments-differ
 class Channel(SansioChannel):
 
-    def __init__(self, *args, writer, **kwargs):
+    def __init__(self, *args, reader, writer, **kwargs):
         super().__init__(*args, **kwargs)
+        self.reader = reader
         self.writer = writer
         # Used to synchronize AMQP methods with OK replies
         self._reply_queue = asyncio.Queue()
@@ -42,6 +44,8 @@ class Channel(SansioChannel):
                 await self._consumed_messages.put(message)
 
     async def _flush_outbound(self, has_reply):
+        if self.reader.at_eof():
+            raise ConnectionAbortedError
         self.writer.write(self.data_to_send())
         await self.writer.drain()
         if has_reply:
@@ -54,7 +58,7 @@ class Channel(SansioChannel):
         await self.open()
         return self
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(self, exc_type, exc, traceback):
         if not self.closed:
             reply_code = 0
             reply_text = ''
@@ -63,7 +67,7 @@ class Channel(SansioChannel):
                 reply_text = exc.reply_text
             await self.close(reply_code, reply_text)
 
-    @override_signature(SansioChannel.close)
+    @override_signature(SansioChannel.open)
     async def open(self):
         has_reply = super().open()
         return await self._flush_outbound(has_reply)
@@ -231,20 +235,14 @@ class Channel(SansioChannel):
         has_reply = super().confirm_select(*args, **kwargs)
         return await self._flush_outbound(has_reply)
 
-    async def next_consumed_message(self):
-        return await self._consumed_messages.get()
-
     async def consumed_messages(self):
         while True:
-            message = await self.next_consumed_message()
+            message = await self._consumed_messages.get()
             yield message
-
-    async def next_returned_message(self):
-        return await self._returned_messages.get()
 
     async def returned_messages(self):
         while True:
-            message = await self.next_returned_message()
+            message = await self._returned_messages.get()
             yield message
 
     async def wait_for_confirmations(self):
@@ -275,8 +273,12 @@ class Connection(SansioConnection):
         # Used to synchronize AMQP methods with OK replies
         self._reply_queue = asyncio.Queue()
 
+        # An infinite loop of read/write communication, set
+        # by open method
+        self._communicate_task = None
+
     def Channel(self, *args, **kwargs):
-        return Channel(*args, writer=self.writer, **kwargs)
+        return Channel(*args, reader=self.reader, writer=self.writer, **kwargs)
 
     async def _receive_method(self, method):
         await self._reply_queue.put(method)
@@ -322,14 +324,17 @@ class Connection(SansioConnection):
         if not self.closed:
             super().close(reply_code, reply_text, class_id, method_id)
             await self._flush_outbound()
-            await self._reply_queue.get()
-        self._communicate_task.cancel()
+            if not self.reader.at_eof():
+                await self._reply_queue.get()
+        # self._communicate_task.cancel()
+        await self._communicate_task
         self.writer.close()
 
     async def _receive_ConnectionCloseOK(self, method):
+        super()._receive_ConnectionCloseOK(method)
         await self._reply_queue.put(method)
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(self, exc_type, exc, traceback):
         if not self.closed:
             reply_code = 0
             reply_text = ''
@@ -339,5 +344,82 @@ class Connection(SansioConnection):
             await self.close(reply_code, reply_text)
 
     async def _flush_outbound(self):
+        if self.reader.at_eof():
+            raise ConnectionAbortedError
         self.writer.write(self.data_to_send())
         await self.writer.drain()
+
+
+# Copy-pasted from https://github.com/python/asyncio/pull/465
+def _cleanup(main_task, loop):
+    pending = []
+    if not main_task.done():
+        pending.append(main_task)
+    try:
+        # `shutdown_asyncgens` was added in Python 3.6; not all
+        # event loops might support it.
+        shutdown_asyncgens = loop.shutdown_asyncgens
+        pending.append(shutdown_asyncgens())
+    except AttributeError:
+        pass
+
+    try:
+        if pending:
+            pending = asyncio.gather(*pending)
+            loop.run_until_complete(pending)
+        main_task.result()
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+def run(main, *, debug=False):
+    """Run a coroutine.
+
+    This function runs the passed coroutine, taking care of
+    managing the asyncio event loop and finalizing asynchronous
+    generators.
+
+    This function cannot be called when another asyncio event loop
+    is running.
+
+    If debug is True, the event loop will be run in debug mode.
+
+    This function handles KeyboardInterrupt exception in a way that
+    the passed coroutine gets cancelled and KeyboardInterrupt
+    is ignored. Therefore, to clean up an asyncio.CancelledError
+    exception should be caught within the passed coroutine.
+
+    This function should be used as a main entry point for
+    asyncio programs, and should not be used to call asynchronous
+    APIs.
+
+    Example:
+
+        from amqproto.io.asyncio import run
+
+        async def main():
+            await asyncio.sleep(1)
+            print('hello')
+
+        run(main())
+    """
+    if asyncio._get_running_loop() is not None:
+        raise RuntimeError(
+            "run() cannot be called from a running event loop")
+    if not asyncio.iscoroutine(main):
+        raise ValueError("a coroutine was expected, got {!r}".format(main))
+
+    loop = asyncio.new_event_loop()
+    main_task = loop.create_task(main)
+    try:
+        asyncio.set_event_loop(loop)
+
+        if debug:
+            loop.set_debug(True)
+
+        return loop.run_until_complete(main_task)
+    except KeyboardInterrupt:
+        main_task.cancel()
+    finally:
+        _cleanup(main_task, loop)
