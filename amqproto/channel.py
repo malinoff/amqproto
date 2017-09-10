@@ -1,20 +1,31 @@
+"""
+amqproto.channel
+~~~~~~~~~~~~~~~~
+
+AMQP channels.
+"""
+
 import io
-import uuid
 import logging
 import collections
 import collections.abc
 
 from . import fsm
 from . import protocol
+from .util import override_docstring
 
 logger = logging.getLogger(__name__)
 
 
 class Channel:
+    """The channel class provides methods for a client to establish a channel
+    to a server and for both peers to operate the channel thereafter.
+    """
 
-    def __init__(self, channel_id, frame_max):
+    def __init__(self, channel_id, frame_max, server_properties):
         self._channel_id = channel_id
         self._frame_max = frame_max
+        self._server_capabilities = server_properties[b'capabilities']
 
         self._buffer = io.BytesIO()
         self._method_handlers = self._setup_method_handlers()
@@ -137,9 +148,7 @@ class Channel:
             return None, message
         return None, None
 
-    def _process_message(self):
-        raise NotImplementedError
-
+    @override_docstring(protocol.ChannelOpen)
     def open(self):
         self._fsm.initiate()
         method = protocol.ChannelOpen()
@@ -152,6 +161,7 @@ class Channel:
     def closed(self):
         return self._fsm.state == 'CLOSED'
 
+    @override_docstring(protocol.ChannelClose)
     def close(self, reply_code, reply_text, class_id=0, method_id=0):
         self._fsm.close()
         method = protocol.ChannelClose(
@@ -178,6 +188,7 @@ class Channel:
         method = protocol.ChannelCloseOK()
         self._send_method(method, has_reply=False)
 
+    @override_docstring(protocol.ChannelFlow)
     def flow(self, active):
         method = protocol.ChannelFlow(active=active)
         return self._send_method(method)
@@ -190,9 +201,11 @@ class Channel:
         method = protocol.ChannelFlowOK(active=active)
         self._send_method(method, has_reply=False)
 
+    @override_docstring(protocol.ExchangeDeclare)
     def exchange_declare(self, exchange, type='direct', passive=False,
                          durable=False, auto_delete=True, internal=False,
                          no_wait=False, arguments=None):
+        # pylint: disable=redefined-builtin
         method = protocol.ExchangeDeclare(
             exchange=exchange, type=type, passive=passive, durable=durable,
             auto_delete=auto_delete, internal=internal, no_wait=no_wait,
@@ -200,28 +213,44 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
+    @override_docstring(protocol.ExchangeDelete)
     def exchange_delete(self, exchange, if_unused=False, no_wait=False):
         method = protocol.ExchangeDelete(
             exchange=exchange, if_unused=if_unused, no_wait=no_wait
         )
         return self._send_method(method, has_reply=not no_wait)
 
+    @override_docstring(protocol.ExchangeBind)
     def exchange_bind(self, destination, source='', routing_key='',
                       no_wait=False, arguments=None):
+        if not self._server_capabilities[b'exchange_exchange_bindings']:
+            class_id, method_id = protocol.ExchangeBind.method_type
+            raise protocol.NotImplemented(
+                'The peer does not support exchange to exchange bindings',
+                class_id, method_id
+            )
         method = protocol.ExchangeBind(
             destination=destination, source=source, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
         return self._send_method(method, has_reply=not no_wait)
 
+    @override_docstring(protocol.ExchangeUnbind)
     def exchange_unbind(self, destination, source='', routing_key='',
                         no_wait=False, arguments=None):
+        if not self._server_capabilities[b'exchange_exchange_bindings']:
+            class_id, method_id = protocol.ExchangeBind.method_type
+            raise protocol.NotImplemented(
+                'The peer does not support exchange to exchange bindings',
+                class_id, method_id
+            )
         method = protocol.ExchangeUnbind(
             destination=destination, source=source, routing_key=routing_key,
             no_wait=no_wait, arguments=arguments,
         )
         return self._send_method(method, has_reply=not no_wait)
 
+    @override_docstring(protocol.QueueDeclare)
     def queue_declare(self, queue='', passive=False, durable=False,
                       exclusive=False, auto_delete=True,
                       no_wait=False, arguments=None):
@@ -232,6 +261,7 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
+    @override_docstring(protocol.QueueBind)
     def queue_bind(self, queue, exchange='', routing_key='',
                    no_wait=False, arguments=None):
         method = protocol.QueueBind(
@@ -240,6 +270,7 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
+    @override_docstring(protocol.QueueUnbind)
     def queue_unbind(self, queue, exchange='', routing_key='', arguments=None):
         method = protocol.QueueUnbind(
             queue=queue, exchange=exchange, routing_key=routing_key,
@@ -247,10 +278,12 @@ class Channel:
         )
         return self._send_method(method)
 
+    @override_docstring(protocol.QueuePurge)
     def queue_purge(self, queue, no_wait=False):
         method = protocol.QueuePurge(queue=queue, no_wait=no_wait)
         return self._send_method(method, has_reply=not no_wait)
 
+    @override_docstring(protocol.QueueDelete)
     def queue_delete(self, queue, if_unused=False, if_empty=False,
                      no_wait=False):
         method = protocol.QueueDelete(
@@ -259,13 +292,15 @@ class Channel:
         )
         return self._send_method(method, has_reply=not no_wait)
 
-    def basic_qos(self, prefetch_size, prefetch_count, global_):
+    @override_docstring(protocol.BasicQos)
+    def basic_qos(self, prefetch_size=0, prefetch_count=0, global_=False):
         method = protocol.BasicQos(
             prefetch_size=prefetch_size, prefetch_count=prefetch_count,
             global_=global_,
         )
         return self._send_method(method)
 
+    @override_docstring(protocol.BasicConsume)
     def basic_consume(self, queue='', consumer_tag='',
                       no_local=False, no_ack=False, exclusive=False,
                       no_wait=False, arguments=None):
@@ -283,6 +318,7 @@ class Channel:
         consumer_tag = method.consumer_tag
         self._consumers.add(consumer_tag)
 
+    @override_docstring(protocol.BasicCancel)
     def basic_cancel(self, consumer_tag, no_wait=False):
         method = protocol.BasicCancel(
             consumer_tag=consumer_tag, no_wait=no_wait
@@ -294,6 +330,7 @@ class Channel:
     def _receive_BasicCancelOK(self, method):
         self._consumers.remove(method.consumer_tag)
 
+    @override_docstring(protocol.BasicPublish)
     def basic_publish(self, message, exchange='', routing_key='',
                       mandatory=False, immediate=False):
         # RabbitMQ does not support BasicPublish with immediate=True
@@ -332,6 +369,7 @@ class Channel:
             )
         self._message = protocol.BasicMessage(delivery_info=method)
 
+    @override_docstring(protocol.BasicGet)
     def basic_get(self, queue, no_ack=False):
         method = protocol.BasicGet(queue=queue, no_ack=no_ack)
         return self._send_method(method)
@@ -342,7 +380,8 @@ class Channel:
     def _receive_BasicGetEmpty(self, method):
         pass
 
-    def basic_ack(self, delivery_tag='', multiple=False):
+    @override_docstring(protocol.BasicAck)
+    def basic_ack(self, delivery_tag, multiple=False):
         method = protocol.BasicAck(
             delivery_tag=delivery_tag, multiple=multiple
         )
@@ -358,21 +397,31 @@ class Channel:
         else:
             self._unconfirmed_set.remove(delivery_tag)
 
-    def basic_reject(self, delivery_tag='', requeue=False):
+    @override_docstring(protocol.BasicReject)
+    def basic_reject(self, delivery_tag, requeue=False):
         method = protocol.BasicReject(
             delivery_tag=delivery_tag, requeue=requeue,
         )
         return self._send_method(method, has_reply=False)
 
+    @override_docstring(protocol.BasicRecoverAsync)
     def basic_recover_async(self, requeue=False):
         method = protocol.BasicRecoverAsync(requeue=requeue)
         return self._send_method(method, has_reply=False)
 
+    @override_docstring(protocol.BasicRecover)
     def basic_recover(self, requeue=False):
         method = protocol.BasicRecover(requeue=requeue)
         return self._send_method(method)
 
-    def basic_nack(self, delivery_tag='', multiple=False, requeue=False):
+    @override_docstring(protocol.BasicNack)
+    def basic_nack(self, delivery_tag, multiple=False, requeue=False):
+        if not self._server_capabilities[b'basic.nack']:
+            class_id, method_id = protocol.BasicNack.method_type
+            raise protocol.NotImplemented(
+                'The peer does not support basic nack',
+                class_id, method_id
+            )
         method = protocol.BasicNack(
             delivery_tag=delivery_tag, multiple=multiple, requeue=requeue
         )
@@ -381,33 +430,58 @@ class Channel:
     def _receive_BasicNack(self, method):
         raise NotImplementedError
 
+    @override_docstring(protocol.TxSelect)
     def tx_select(self):
         method = protocol.TxSelect()
         return self._send_method(method)
 
+    @override_docstring(protocol.TxCommit)
     def tx_commit(self):
         method = protocol.TxCommit()
         return self._send_method(method)
 
+    @override_docstring(protocol.TxRollback)
     def tx_rollback(self):
         method = protocol.TxRollback()
         return self._send_method(method)
 
+    @override_docstring(protocol.ConfirmSelect)
     def confirm_select(self, no_wait=False):
+        if not self._server_capabilities[b'publisher_confirms']:
+            class_id, method_id = protocol.ConfirmSelect.method_type
+            raise protocol.NotImplemented(
+                'The peer does not support publisher confirms',
+                class_id, method_id
+            )
         if self._next_publish_seq_no == 0:
             self._next_publish_seq_no = 1
         method = protocol.ConfirmSelect(nowait=no_wait)
         return self._send_method(method, has_reply=not no_wait)
+# pylint: enable=too-many-public-methods
 
 
 class ChannelsManager(collections.abc.Mapping):
+    """A Mapping-like helper to manage channels.
+    This helps to watch for available channel ids and
+    to validate constraints in a single place.
 
-    def __init__(self, channel_max, frame_max, channel_cls):
+    You should never work with ``ChannelsManager`` objects directly.
+    """
+
+    def __init__(self, channel_max, frame_max, server_properties, channel_cls):
         self.channel_cls = channel_cls
         self.channel_max = channel_max
         self.frame_max = frame_max
+        self.server_properties = server_properties
         self._next_channel_id = 1
         self._channels = {}
+
+    def _make_channel(self, channel_id):
+        channel = self.channel_cls(
+            channel_id, self.frame_max, self.server_properties
+        )
+        self._channels[channel_id] = channel
+        return channel
 
     def __getitem__(self, channel_id):
         if channel_id is None:
@@ -418,13 +492,11 @@ class ChannelsManager(collections.abc.Mapping):
                     "is reached".format(self.channel_max)
                 )
             self._next_channel_id += 1
-            channel = self.channel_cls(channel_id, self.frame_max)
-            self._channels[channel_id] = channel
+            channel = self._make_channel(channel_id)
         else:
             channel = self._channels.get(channel_id, None)
             if channel is None:
-                channel = self.channel_cls(channel_id, self.frame_max)
-                self._channels[channel_id] = channel
+                channel = self._make_channel(channel_id)
         return channel
 
     def __iter__(self):  # pragma: no cover

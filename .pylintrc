@@ -1,0 +1,12 @@
+[BASIC]
+good-names = logger
+
+[MESSAGES CONTROL]
+disable=
+    too-many-public-methods,
+    too-many-arguments,
+    missing-docstring,
+    invalid-name,
+    too-many-instance-attributes,
+    no-self-use,
+    unused-argument,

@@ -14,7 +14,7 @@ import attr
 
 from . import types
 
-__all__ = ['BasicMessage']
+__all__ = ['BasicMessage', 'DeliveryMode']
 
 PROPERTIES = collections.OrderedDict((
     ('content_type', types.Shortstr),
@@ -62,6 +62,11 @@ def _py_type_to_amqp_datetime(value):
 @_py_type_to_amqp_type.register(type(None))
 def _py_type_to_amqp_none(value):
     return None
+
+
+@_py_type_to_amqp_type.register(enum.Enum)
+def _py_type_to_amqp_enum(value):
+    return _py_type_to_amqp_type(value.value)
 
 
 class DeliveryMode(enum.Enum):

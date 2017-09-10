@@ -1,15 +1,21 @@
+"""
+amqproto.connection
+~~~~~~~~~~~~~~~~~~~
+
+AMQP connections.
+"""
 import io
 import time
 import logging
 import platform
 import pkg_resources
-from concurrent.futures import Future
 
 
 from . import fsm
 from . import channel
 from . import protocol
 from . import auth as _auth_methods
+from .util import override_docstring
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +125,8 @@ class Connection:
     def data_to_send(self):
         data = self._buffer.getvalue()
         if self._channels_manager is not None:
-            for channel in self._channels_manager.values():
-                data += channel.data_to_send()
+            for chan in self._channels_manager.values():
+                data += chan.data_to_send()
         self._buffer = io.BytesIO()
         return data
 
@@ -179,6 +185,8 @@ class Connection:
         return self._heartbeater.send()
 
     def initiate_connection(self):
+        """This method initiates the connection negotiation between the peers.
+        """
         self._fsm.initiate()
         return self._send_ProtocolHeaderFrame()
 
@@ -322,6 +330,7 @@ class Connection:
 
         self._channels_manager = channel.ChannelsManager(
             self.properties['channel_max'], self.properties['frame_max'],
+            self._handshake_properties['server']['properties'],
             self.Channel,
         )
         return self._send_ConnectionTuneOK()
@@ -344,7 +353,9 @@ class Connection:
     def closed(self):
         return self._fsm.state == 'CLOSED'
 
+    @override_docstring(protocol.ConnectionClose)
     def close(self, reply_code, reply_text, class_id=0, method_id=0):
+        self._fsm.close()
         method = protocol.ConnectionClose(
             reply_code=reply_code, reply_text=reply_text,
             class_id=class_id, method_id=method_id
@@ -352,9 +363,10 @@ class Connection:
         self._send_method(method)
 
     def _receive_ConnectionCloseOK(self, method):
-        pass
+        self._fsm.terminate()
 
     def _receive_ConnectionClose(self, method):
+        self._fsm.close()
         AMQPError = protocol.ERRORS_BY_CODE[method.reply_code]
         exc = AMQPError(
             method.reply_text,
@@ -364,6 +376,7 @@ class Connection:
         return self._send_ConnectionCloseOK(exc)
 
     def _send_ConnectionCloseOK(self, _exc):
+        self._fsm.terminate()
         method = protocol.ConnectionCloseOK()
         self._send_method(method)
         raise _exc
