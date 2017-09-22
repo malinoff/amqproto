@@ -1,16 +1,3 @@
-"""
-amqproto.protocol.errors
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-AMQP errors classes.
-
-This file was generated 2017-08-08 from
-/codegen/amqp0-9-1.extended.xml.
-
-"""
-# Some exceptions may shadow builtins.
-# pylint: disable=redefined-builtin
-
 from itertools import chain
 
 
@@ -20,7 +7,10 @@ class AMQPError(Exception):
     reply_code = None
     soft = None
 
-    def __init__(self, reply_text, class_id=0, method_id=0):
+    def __init__(self,
+                 reply_text: ReplyText,
+                 class_id: ClassId=0,
+                 method_id: MethodId=0):
         super().__init__()
         if isinstance(reply_text, str):
             reply_text = reply_text.encode('utf-8')
@@ -40,18 +30,23 @@ class AMQPError(Exception):
 class SoftError(AMQPError):
     """Soft errors are recoverable which means if such error happens,
     only the channel where the error happened closes, other channels
-    can continue to operate.
-    """
+    can continue to operate."""
 
     soft = True
 
 
 class HardError(AMQPError):
     """Hard errors are not recoverable which means if such error happens,
-    the whole connection must be closed as soon as possible.
-    """
+    the whole connection must be closed as soon as possible."""
 
     soft = False
+
+
+class ConnectionAborted(HardError):
+    """The server closed the connection abruptly.
+    """
+
+    reply_code = 0
 
 
 class ContentTooLarge(SoftError):
@@ -151,8 +146,8 @@ class ChannelError(HardError):
 
 
 class UnexpectedFrame(HardError):
-    """The peer sent a frame that was not expected, usually in the context of
-    a content header and body. This strongly indicates a fault in the peer's
+    """The peer sent a frame that was not expected, usually in the context of a
+    content header and body.  This strongly indicates a fault in the peer's
     content processing.
     """
 
@@ -169,9 +164,8 @@ class ResourceError(HardError):
 
 
 class NotAllowed(HardError):
-    """The client tried to work with some entity in a manner that is
-    prohibited by the server, due to security settings or by some other
-    criteria.
+    """The client tried to work with some entity in a manner that is prohibited
+    by the server, due to security settings or by some other criteria.
     """
 
     reply_code = 530
@@ -194,9 +188,7 @@ class InternalError(HardError):
     reply_code = 541
 
 
-ERRORS_BY_CODE = {
+REPLY_BY_CODE = {
     cls.reply_code: cls
     for cls in chain(SoftError.__subclasses__(), HardError.__subclasses__())
 }
-
-__all__ = list(locals())

@@ -1,8 +1,8 @@
 """
-amqproto.protocol.types
-~~~~~~~~~~~~~~~~~~~~~~~
+amqproto.protocol.domains
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implementation of AMQP types.
+Implementation of AMQP domains (types).
 
 Instances of type classes behave like standard python types. For example,
 all numeric types can be compared with built-in numeric types like
@@ -44,6 +44,7 @@ types), in that case one only need to override `validate` method.
 # pylint: disable=missing-docstring
 
 import io
+import re
 import math
 import struct
 import decimal
@@ -54,6 +55,8 @@ import collections.abc
 
 
 class BaseType:
+
+    __slots__ = ()
 
     TABLE_LABEL = None
 
@@ -90,7 +93,11 @@ class BaseType:
         return '<{}: {}>'.format(self.__class__.__name__, self)
 
 
+# Primitive domains
 class Bool(BaseType):
+
+    __slots__ = ('_value', )
+
     TABLE_LABEL = b't'
 
     _STRUCT_FMT = '?'
@@ -470,6 +477,9 @@ Longstr = LongStr
 
 
 class Void(BaseType):
+
+    __slots__ = ('_value', )
+
     TABLE_LABEL = b'V'
 
     size = 0
@@ -557,6 +567,9 @@ class Timestamp(datetime.datetime, BaseType):
 
 
 class Table(BaseType, collections.abc.MutableMapping):
+
+    __slots__ = ('_value', )
+
     TABLE_LABEL = b'F'
 
     def __init__(self, *args, **kwargs):
@@ -639,6 +652,9 @@ class Table(BaseType, collections.abc.MutableMapping):
 
 
 class Array(BaseType, collections.abc.MutableSequence):
+
+    __slots__ = ('_value', )
+
     TABLE_LABEL = b'A'
 
     def __init__(self, *args, **kwargs):
@@ -800,5 +816,236 @@ def _py_type_to_amqp_none(value):
 TABLE_LABEL_TO_CLS = {cls.TABLE_LABEL: cls
                       for cls in BaseType.__subclasses__()
                       if cls.TABLE_LABEL is not None}
+
+
+# Non-primitive domains
+class ClassId(Short):
+    """Class id.
+
+    Identifier of an AMQP class.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class ConsumerTag(Shortstr):
+    """Consumer tag.
+
+    Identifier for the consumer, valid within the current channel.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class DeliveryTag(Longlong):
+    """Server-assigned delivery tag.
+
+    The server-assigned and channel-specific delivery tag.
+
+    Rules:
+
+      * channel-local:
+        The delivery tag is valid only within the channel from which the
+        message was received. I.e. a client MUST NOT receive a message on
+        one channel and then acknowledge it on another.
+
+      * non-zero:
+        The server MUST NOT use a zero value for delivery tags. Zero is
+        reserved for client use, meaning "all messages so far received".
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class ExchangeName(Shortstr):
+    """Exchange name.
+
+    The exchange name is a client-selected string that identifies the exchange
+    for publish methods.
+    """
+
+    @staticmethod
+    def validate(value):
+        if len(value) > 127:
+            raise ValueError('len(value) > 127')
+        if re.match(r'^[a-zA-Z0-9-_.:]*$', value) is None:
+            raise ValueError(
+                'value does not match the following regex: {}'.format(
+                    r'^[a-zA-Z0-9-_.:]*$'
+                )
+            )
+
+
+class MethodId(Short):
+    """Method id.
+
+    Identifier of an AMQP method.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class NoAck(Bit):
+    """No acknowledgement needed.
+
+    If this field is set the server does not expect acknowledgements for
+    messages. That is, when a message is delivered to the client the server
+    assumes the delivery will succeed and immediately dequeues it. This
+    functionality may increase performance but at the cost of reliability.
+    Messages can get lost if a client dies before they are delivered to the
+    application.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class NoLocal(Bit):
+    """Do not deliver own messages.
+
+    If the no-local field is set the server will not send messages to the
+    connection that published them.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class NoWait(Bit):
+    """Do not send reply method.
+
+    If set, the server will not respond to the method. The client should not
+    wait for a reply method. If the server could not complete the method it
+    will raise a channel or connection exception.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class Path(Shortstr):
+    """Path.
+
+    Unconstrained.
+    """
+
+    @staticmethod
+    def validate(value):
+        if not value:
+            raise ValueError('value is Falsey')
+        if len(value) > 127:
+            raise ValueError('len(value) > 127')
+
+
+class PeerProperties(Table):
+    """Peer properties.
+
+    This table provides a set of peer properties, used for identification,
+    debugging, and general information.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class QueueName(Shortstr):
+    """Queue name.
+
+    The queue name identifies the queue within the vhost.  In methods where the
+    queue name may be blank, and that has no specific significance, this refers
+    to the 'current' queue for the channel, meaning the last queue that the
+    client declared on the channel.  If the client did not declare a queue, and
+    the method needs a queue name, this will result in a 502 (syntax error)
+    channel exception.
+    """
+
+    @staticmethod
+    def validate(value):
+        if len(value) > 127:
+            raise ValueError('len(value) > 127')
+        if re.match(r'^[a-zA-Z0-9-_.:]*$', value) is None:
+            raise ValueError(
+                'value does not match the following regex: {}'.format(
+                    r'^[a-zA-Z0-9-_.:]*$'
+                )
+            )
+
+
+class Redelivered(Bit):
+    """Message is being redelivered.
+
+    This indicates that the message has been previously delivered to this or
+    another client.
+
+    Rules:
+
+      * implementation:
+        The server SHOULD try to signal redelivered messages when it can.
+        When redelivering a message that was not successfully acknowledged,
+        the server SHOULD deliver it to the original client if possible.
+
+      * hinting:
+        The client MUST NOT rely on the redelivered field but should take it
+        as a hint that the message may already have been processed. A fully
+        robust client must be able to track duplicate received messages on
+        non-transacted, and locally-transacted channels.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class MessageCount(Long):
+    """Number of messages in queue.
+
+    The number of messages in the queue, which will be zero for newly-declared
+    queues. This is the number of messages present in the queue, and committed
+    if the channel on which they were published is transacted, that are not
+    waiting acknowledgement.
+    """
+
+    @staticmethod
+    def validate(value):
+        pass
+
+
+class ReplyCode(Short):
+    """Reply code from server.
+
+    The reply code. The AMQ reply codes are defined as constants at the start
+    of this formal specification.
+    """
+
+    @staticmethod
+    def validate(value):
+        if not value:
+            raise ValueError('value is Falsey')
+
+
+class ReplyText(Shortstr):
+    """Localised reply text.
+
+    The localised reply text. This text can be logged as an aid to resolving
+    issues.
+    """
+
+    @staticmethod
+    def validate(value):
+        if not value:
+            raise ValueError('value is Falsey')
+
 
 __all__ = [name for name in locals() if not name.startswith('_')]

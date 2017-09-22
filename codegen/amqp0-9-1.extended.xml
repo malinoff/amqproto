@@ -174,135 +174,142 @@
   <constant name = "frame-end"        value = "206" />
 
   <!-- Reply codes -->
-  <constant name = "reply-success" value = "200">
+  <reply name = "reply-success" value = "200">
     <doc>
       Indicates that the method completed successfully. This reply code is
       reserved for future use - the current protocol design does not use positive
       confirmation and reply codes are sent only in case of an error.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "content-too-large" value = "311" class = "soft-error">
+  <!-- Not really an AMQP reply, but useful to indicate the connection close -->
+  <reply name = "connection-aborted" value = "0" class = "hard-error">
+    <doc>
+      The server closed the connection abruptly.
+    </doc>
+  </reply>
+
+  <reply name = "content-too-large" value = "311" class = "soft-error">
     <doc>
       The client attempted to transfer content larger than the server could accept
       at the present time. The client may retry at a later time.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "no-consumers" value = "313" class = "soft-error">
+  <reply name = "no-consumers" value = "313" class = "soft-error">
     <doc>
       When the exchange cannot deliver to a consumer when the immediate flag is
       set. As a result of pending data on the queue or the absence of any
       consumers of the queue.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "connection-forced" value = "320" class = "hard-error">
+  <reply name = "connection-forced" value = "320" class = "hard-error">
     <doc>
       An operator intervened to close the connection for some reason. The client
       may retry at some later date.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "invalid-path" value = "402" class = "hard-error">
+  <reply name = "invalid-path" value = "402" class = "hard-error">
     <doc>
       The client tried to work with an unknown virtual host.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "access-refused" value = "403" class = "soft-error">
+  <reply name = "access-refused" value = "403" class = "soft-error">
     <doc>
       The client attempted to work with a server entity to which it has no
       access due to security settings.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "not-found" value = "404" class = "soft-error">
+  <reply name = "not-found" value = "404" class = "soft-error">
     <doc>
       The client attempted to work with a server entity that does not exist.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "resource-locked" value = "405" class = "soft-error">
+  <reply name = "resource-locked" value = "405" class = "soft-error">
     <doc>
       The client attempted to work with a server entity to which it has no
       access because another client is working with it.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "precondition-failed" value = "406" class = "soft-error">
+  <reply name = "precondition-failed" value = "406" class = "soft-error">
     <doc>
       The client requested a method that was not allowed because some precondition
       failed.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "frame-error" value = "501" class = "hard-error">
+  <reply name = "frame-error" value = "501" class = "hard-error">
     <doc>
       The sender sent a malformed frame that the recipient could not decode.
       This strongly implies a programming error in the sending peer.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "syntax-error" value = "502" class = "hard-error">
+  <reply name = "syntax-error" value = "502" class = "hard-error">
     <doc>
       The sender sent a frame that contained illegal values for one or more
       fields. This strongly implies a programming error in the sending peer.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "command-invalid" value = "503" class = "hard-error">
+  <reply name = "command-invalid" value = "503" class = "hard-error">
     <doc>
       The client sent an invalid sequence of frames, attempting to perform an
       operation that was considered invalid by the server. This usually implies
       a programming error in the client.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "channel-error" value = "504" class = "hard-error">
+  <reply name = "channel-error" value = "504" class = "hard-error">
     <doc>
       The client attempted to work with a channel that had not been correctly
       opened. This most likely indicates a fault in the client layer.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "unexpected-frame" value = "505" class = "hard-error">
+  <reply name = "unexpected-frame" value = "505" class = "hard-error">
     <doc>
       The peer sent a frame that was not expected, usually in the context of
       a content header and body.  This strongly indicates a fault in the peer's
       content processing.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "resource-error" value = "506" class = "hard-error">
+  <reply name = "resource-error" value = "506" class = "hard-error">
     <doc>
       The server could not complete the method because it lacked sufficient
       resources. This may be due to the client creating too many of some type
       of entity.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "not-allowed" value = "530" class = "hard-error">
+  <reply name = "not-allowed" value = "530" class = "hard-error">
     <doc>
       The client tried to work with some entity in a manner that is prohibited
       by the server, due to security settings or by some other criteria.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "not-implemented" value = "540" class = "hard-error">
+  <reply name = "not-implemented" value = "540" class = "hard-error">
     <doc>
       The client tried to use functionality that is not implemented in the
       server.
     </doc>
-  </constant>
+  </reply>
 
-  <constant name = "internal-error" value = "541" class = "hard-error">
+  <reply name = "internal-error" value = "541" class = "hard-error">
     <doc>
       The server could not complete the method because of an internal error.
       The server may require intervention by an operator in order to resume
       normal operations.
     </doc>
-  </constant>
+  </reply>
 
   <!--
       ======================================================
@@ -310,7 +317,23 @@
       ======================================================
   -->
 
-  <domain name = "class-id" type = "short" />
+  <!-- Elementary domains -->
+  <domain name = "bit"        type = "bit"       label = "single bit" />
+  <domain name = "octet"      type = "octet"     label = "single octet" />
+  <domain name = "short"      type = "short"     label = "16-bit integer" />
+  <domain name = "long"       type = "long"      label = "32-bit integer" />
+  <domain name = "longlong"   type = "longlong"  label = "64-bit integer" />
+  <domain name = "shortstr"   type = "shortstr"  label = "short string" />
+  <domain name = "longstr"    type = "longstr"   label = "long string" />
+  <domain name = "timestamp"  type = "timestamp" label = "64-bit timestamp" />
+  <domain name = "table"      type = "table"     label = "field table" />
+
+  <!-- Complex domains -->
+  <domain name = "class-id" type = "short" label = "class id">
+    <doc>
+      Identifier of an AMQP class.
+    </doc>
+  </domain>
 
   <domain name = "consumer-tag" type = "shortstr" label = "consumer tag">
     <doc>
@@ -320,7 +343,7 @@
 
   <domain name = "delivery-tag" type = "longlong" label = "server-assigned delivery tag">
     <doc>
-      The server-assigned and channel-specific delivery tag
+      The server-assigned and channel-specific delivery tag.
     </doc>
     <rule name = "channel-local">
       <doc>
@@ -346,7 +369,11 @@
     <assert check = "regexp" value = "^[a-zA-Z0-9-_.:]*$" />
   </domain>
 
-  <domain name = "method-id" type = "short" />
+  <domain name = "method-id" type = "short" label = "method id">
+    <doc>
+      Identifier of an AMQP method.
+    </doc>
+  </domain>
 
   <domain name = "no-ack" type = "bit" label = "no acknowledgement needed">
     <doc>
@@ -374,7 +401,7 @@
     </doc>
   </domain>
 
-  <domain name = "path" type = "shortstr">
+  <domain name = "path" type = "shortstr" label = "path">
     <doc>
       Unconstrained.
     </doc>
@@ -382,7 +409,7 @@
     <assert check = "length" value = "127" />
   </domain>
 
-  <domain name = "peer-properties" type = "table">
+  <domain name = "peer-properties" type = "table" label = "peer properties">
     <doc>
       This table provides a set of peer properties, used for identification, debugging,
       and general information.
@@ -454,17 +481,6 @@
     <assert check = "notnull" />
   </domain>
 
-  <!-- Elementary domains -->
-  <domain name = "bit"        type = "bit"       label = "single bit" />
-  <domain name = "octet"      type = "octet"     label = "single octet" />
-  <domain name = "short"      type = "short"     label = "16-bit integer" />
-  <domain name = "long"       type = "long"      label = "32-bit integer" />
-  <domain name = "longlong"   type = "longlong"  label = "64-bit integer" />
-  <domain name = "shortstr"   type = "shortstr"  label = "short string" />
-  <domain name = "longstr"    type = "longstr"   label = "long string" />
-  <domain name = "timestamp"  type = "timestamp" label = "64-bit timestamp" />
-  <domain name = "table"      type = "table"     label = "field table" />
-
   <!-- ==  CONNECTION  ======================================================= -->
 
   <class name = "connection" handler = "connection" index = "10" label = "work with socket connections">
@@ -504,7 +520,7 @@
           it MUST respond with a valid protocol header and then close the socket
           connection.
         </doc>
-        <doc type = "scenario">
+        <doc type = "scenario" on-failure = "connection-aborted">
           The client sends a protocol header containing an invalid protocol name.
           The server MUST respond by sending a valid protocol header and then closing
           the connection.
@@ -515,7 +531,7 @@
           The server MUST provide a protocol version that is lower than or equal to
           that requested by the client in the protocol header.
         </doc>
-        <doc type = "scenario">
+        <doc type = "scenario" on-failure = "connection-aborted">
           The client requests a protocol version that is higher than any valid
           implementation, e.g. 2.0.  The server must respond with a protocol header
           indicating its supported protocol version, e.g. 1.0.
@@ -526,7 +542,7 @@
           If the client cannot handle the protocol version suggested by the server
           it MUST close the socket connection without sending any further data.
         </doc>
-        <doc type = "scenario">
+        <doc type = "scenario" on-failure = "connection-aborted">
           The server sends a protocol version that is lower than any valid
           implementation, e.g. 0.1.  The client must respond by closing the
           connection without sending any further data.
@@ -551,7 +567,7 @@
       </field>
 
       <field name = "server-properties" domain = "peer-properties" label = "server properties">
-        <rule name = "required-fields">
+        <rule name = "required-fields" on-failure = "connection-aborted">
           <doc>
             The properties SHOULD contain at least these fields: "host", specifying the
             server host name or address, "product", giving the name of the server product,
@@ -578,7 +594,7 @@
           A list of the message locales that the server supports, delimited by spaces. The
           locale defines the language in which the server will send reply texts.
         </doc>
-        <rule name = "required-support">
+        <rule name = "required-support" on-failure = "connection-aborted">
           <doc>
             The server MUST support at least the en_US locale.
           </doc>
@@ -591,8 +607,7 @@
       </field>
     </method>
 
-    <method name = "start-ok" synchronous = "1" index = "11"
-      label = "select security mechanism and locale">
+    <method name = "start-ok" synchronous = "1" index = "11" label = "select security mechanism and locale">
       <doc>
         This method selects a SASL security mechanism.
       </doc>
@@ -622,7 +637,7 @@
             can handle from the list provided by the server.
           </doc>
         </rule>
-        <rule name = "validity">
+        <rule name = "validity" on-failure = "connection-aborted">
           <doc>
             If the mechanism field does not contain one of the security mechanisms
             proposed by the server in the Start method, the server MUST close the
@@ -693,8 +708,7 @@
 
     <!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -->
 
-    <method name = "tune" synchronous = "1" index = "30"
-      label = "propose connection tuning parameters">
+    <method name = "tune" synchronous = "1" index = "30" label = "propose connection tuning parameters">
       <doc>
         This method proposes a set of connection configuration values to the client. The
         client can accept and/or adjust these.
@@ -830,9 +844,9 @@
         </rule>
       </field>
       <!-- Deprecated: "capabilities", must be zero -->
-      <field name = "reserved-1" type = "shortstr" reserved = "1" />
+      <field name = "reserved-1" domain = "shortstr" reserved = "1" />
       <!-- Deprecated: "insist", must be zero -->
-      <field name = "reserved-2" type = "bit" reserved = "1" />
+      <field name = "reserved-2" domain = "bit" reserved = "1" />
     </method>
 
     <method name = "open-ok" synchronous = "1" index = "41" label = "signal that connection is ready">
@@ -841,7 +855,7 @@
       </doc>
       <chassis name = "client" implement = "MUST" />
       <!-- Deprecated: "known-hosts", must be zero -->
-      <field name = "reserved-1" type = "shortstr" reserved = "1" />
+      <field name = "reserved-1" domain = "shortstr" reserved = "1" />
     </method>
 
     <!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -->
@@ -936,7 +950,7 @@
       <chassis name = "server" implement = "MUST" />
       <response name = "open-ok" />
       <!-- Deprecated: "out-of-band", must be zero -->
-      <field name = "reserved-1" type = "shortstr" reserved = "1" />
+      <field name = "reserved-1" domain = "shortstr" reserved = "1" />
     </method>
 
     <method name = "open-ok" synchronous = "1" index = "11" label = "signal that the channel is ready">
@@ -945,7 +959,7 @@
       </doc>
       <chassis name = "client" implement = "MUST" />
       <!-- Deprecated: "channel-id", must be zero -->
-      <field name = "reserved-1" type = "longstr" reserved = "1" />
+      <field name = "reserved-1" domain = "longstr" reserved = "1" />
     </method>
 
     <!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -->
@@ -1169,7 +1183,7 @@
       <response name = "declare-ok" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "exchange" domain = "exchange-name">
         <rule name = "reserved" on-failure = "access-refused">
@@ -1333,7 +1347,7 @@
       <response name = "delete-ok" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "exchange" domain = "exchange-name">
         <rule name = "exists" on-failure = "not-found">
@@ -1421,7 +1435,7 @@
       <response name = "bind-ok"/>
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1"/>
+      <field name = "reserved-1" domain = "short" reserved = "1"/>
 
       <field name = "destination" domain = "exchange-name"
              label = "name of the destination exchange to bind to">
@@ -1513,7 +1527,7 @@
       <response name = "unbind-ok"/>
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1"/>
+      <field name = "reserved-1" domain = "short" reserved = "1"/>
 
       <field name = "destination" domain = "exchange-name">
         <doc>Specifies the name of the destination exchange to unbind.</doc>
@@ -1644,7 +1658,7 @@
       <response name = "declare-ok" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "queue" domain = "queue-name">
         <rule name = "default-name">
@@ -1901,7 +1915,7 @@
       <response name = "bind-ok" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "queue" domain = "queue-name">
         <doc>Specifies the name of the queue to bind.</doc>
@@ -1990,7 +2004,7 @@
       <response name="unbind-ok"/>
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "queue" domain = "queue-name">
         <doc>Specifies the name of the queue to unbind.</doc>
@@ -2077,7 +2091,7 @@
       <response name = "purge-ok" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "queue" domain = "queue-name">
         <doc>Specifies the name of the queue to purge.</doc>
@@ -2137,7 +2151,7 @@
       <response name = "delete-ok" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "queue" domain = "queue-name">
         <doc>Specifies the name of the queue to delete.</doc>
@@ -2482,7 +2496,7 @@
       <response name = "consume-ok" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "queue" domain = "queue-name">
         <doc>Specifies the name of the queue to consume from.</doc>
@@ -2624,7 +2638,7 @@
       <chassis name = "server" implement = "MUST" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "exchange" domain = "exchange-name">
         <doc>
@@ -2797,7 +2811,7 @@
       <chassis name = "server" implement = "MUST" />
 
       <!-- Deprecated: "ticket", must be zero -->
-      <field name = "reserved-1" type = "short" reserved = "1" />
+      <field name = "reserved-1" domain = "short" reserved = "1" />
 
       <field name = "queue" domain = "queue-name">
         <doc>Specifies the name of the queue to get a message from.</doc>
@@ -2839,7 +2853,7 @@
       </doc>
       <chassis name = "client" implement = "MAY" />
       <!-- Deprecated: "cluster-id", must be empty -->
-      <field name = "reserved-1" type = "shortstr" reserved = "1" />
+      <field name = "reserved-1" domain = "shortstr" reserved = "1" />
     </method>
 
     <!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -->
@@ -2994,6 +3008,7 @@
         </doc>
       </rule>
       <chassis name = "server" implement = "MUST" />
+      <response name = "recover-ok" />
       <field name = "requeue" domain = "bit" label = "requeue the message">
         <doc>
           If this field is zero, the message will be redelivered to the original
@@ -3306,7 +3321,7 @@
       </doc>
       <chassis name="server" implement="MUST"/>
       <response name="select-ok"/>
-      <field name = "nowait" type = "bit">
+      <field name = "nowait" domain = "bit">
         do not send a reply method
         <doc>
           If set, the server will not respond to the method. The client should

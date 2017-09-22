@@ -1,0 +1,63 @@
+from .domains import *
+from .frames import MethodPayload
+{% for name, class_opts in classes.items() %}
+
+
+class {{ name }}:
+    """{{ class_opts['label'] }}
+
+    {{ class_opts['docs'][0][1] | wordwrap(width=72) | indent }}
+{% for doc in class_opts['docs'][1:] %}
+
+    {{ doc[0] | capitalize }}:
+
+      {{ doc[1] }}
+{% endfor %}
+    """
+
+    class_id = {{ class_opts['index'] }}
+
+{% if 'handler' in class_opts %}
+    def __init__(self, {{ class_opts['handler'] }}):
+        self.{{ class_opts['handler'] }} = {{ class_opts['handler'] }}
+{% endif %}
+{% for name, opts in class_opts['methods'].items() %}
+
+{% if not opts['fields'] or (opts['all_reserved'] and not name.endswith('ok')) %}
+    def {{ name }}(self):
+{% else %}
+    def {{ name }}(self,
+    {% for field_name, field_opts in opts['non_reserved' if not name.endswith('ok') else 'fields'].items() %}
+        {% set to_indent = (name + '(') | length %}
+        {{ ' ' * to_indent + field_name + ': ' + field_opts['domain'] }}{% if loop.last %}):{% else %},{% endif %}
+
+    {% endfor %}
+{% endif %}
+        """{{ opts['label'] }}
+
+        {{ opts['doc'] | wordwrap(width=72) | indent(8) }}
+        """
+        {% if not name.startswith('on_') %}
+        return MethodPayload(
+            class_id={{ class_opts['index'] }},
+            method_id={{ opts['index'] }},
+        {% for field_name, field_opts in opts['fields'].items() %}
+            {{ field_opts['domain'] }}({{ field_name if not field_opts['reserved'] else 'None' }}),
+        {% endfor %}
+        )
+        {% endif %}
+{% endfor %}
+
+    METHOD_BY_ID = {
+{% for name, opts in class_opts['methods'].items() %}
+        {{ opts['index'] }}: {{ name }},
+{% endfor %}
+    }
+{% endfor %}
+
+
+CLASS_BY_ID = {
+{% for name, opts in classes.items() %}
+    {{ opts['index'] }}: {{ name }},
+{% endfor %}
+}

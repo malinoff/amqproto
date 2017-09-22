@@ -1,16 +1,3 @@
-"""
-amqproto.protocol.errors
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-AMQP errors classes.
-
-This file was generated {{ gendate }} from
-{{ gensource }}.
-
-"""
-# Some exceptions may shadow builtins.
-# pylint: disable=redefined-builtin
-
 from itertools import chain
 
 
@@ -20,7 +7,10 @@ class AMQPError(Exception):
     reply_code = None
     soft = None
 
-    def __init__(self, reply_text, class_id=0, method_id=0):
+    def __init__(self,
+                 reply_text: ReplyText,
+                 class_id: ClassId=0,
+                 method_id: MethodId=0):
         super().__init__()
         if isinstance(reply_text, str):
             reply_text = reply_text.encode('utf-8')
@@ -40,32 +30,31 @@ class AMQPError(Exception):
 class SoftError(AMQPError):
     """Soft errors are recoverable which means if such error happens,
     only the channel where the error happened closes, other channels
-    can continue to operate.
-    """
+    can continue to operate."""
 
     soft = True
 
 
 class HardError(AMQPError):
     """Hard errors are not recoverable which means if such error happens,
-    the whole connection must be closed as soon as possible.
-    """
+    the whole connection must be closed as soon as possible."""
 
     soft = False
-{% for name, value, kind, doc in error_classes %}
 
 
-class {{ name }}({{ kind }}):
-    """{{ doc }}
-    """
+{% for name, opts in replies.items() %}
+class {{ name }}({{ opts['class'] }}):
+    {{ ('"""' + opts['doc'] + '\n"""') | wordwrap(width=75) | indent }}
 
-    reply_code = {{ value }}
+    reply_code = {{ opts['value'] }}
+{% if not loop.last %}
+
+
+{% endif %}
 {% endfor %}
 
 
-ERRORS_BY_CODE = {
+REPLY_BY_CODE = {
     cls.reply_code: cls
     for cls in chain(SoftError.__subclasses__(), HardError.__subclasses__())
 }
-
-__all__ = list(locals())
