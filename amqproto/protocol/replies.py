@@ -5,46 +5,40 @@ class AMQPError(Exception):
     """Base class for all AMQP errors."""
 
     reply_code = None
-    soft = None
 
-    def __init__(self,
-                 reply_text: ReplyText,
-                 class_id: ClassId=0,
-                 method_id: MethodId=0):
+    def __init__(self, reply_text, class_id=0, method_id=0):
         super().__init__()
-        if isinstance(reply_text, str):
-            reply_text = reply_text.encode('utf-8')
         self.reply_text = reply_text
         self.class_id = class_id
         self.method_id = method_id
 
     def __str__(self):
-        return self.reply_text.decode('utf-8')
+        return self.reply_text
 
     def __repr__(self):
-        return '<AMQPError: {}, {}, {}>'.format(
-            self.reply_code, self.class_id, self.method_id
+        fmt = "{}('{}', reply_code={} class_id={} method_id={})"
+        return fmt.format(
+            self.__class__.__name__,
+            self.reply_text, self.reply_code,
+            self.class_id, self.method_id
         )
 
 
 class SoftError(AMQPError):
     """Soft errors are recoverable which means if such error happens,
     only the channel where the error happened closes, other channels
-    can continue to operate."""
-
-    soft = True
+    can continue to operate.
+    """
 
 
 class HardError(AMQPError):
     """Hard errors are not recoverable which means if such error happens,
-    the whole connection must be closed as soon as possible."""
-
-    soft = False
+    the whole connection must be closed as soon as possible.
+    """
 
 
 class ConnectionAborted(HardError):
-    """The server closed the connection abruptly.
-    """
+    """The server closed the connection abruptly."""
 
     reply_code = 0
 
@@ -120,7 +114,7 @@ class FrameError(HardError):
     reply_code = 501
 
 
-class SyntaxError(HardError):
+class SyntaxError(HardError):  # pylint: disable=redefined-builtin
     """The sender sent a frame that contained illegal values for one or more
     fields. This strongly implies a programming error in the sending peer.
     """
@@ -171,7 +165,7 @@ class NotAllowed(HardError):
     reply_code = 530
 
 
-class NotImplemented(HardError):
+class NotImplemented(HardError):  # pylint: disable=redefined-builtin
     """The client tried to use functionality that is not implemented in the
     server.
     """

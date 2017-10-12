@@ -1,429 +1,156 @@
-from .domains import *
-from .constants import *
+import itertools
+
+import construct as c
+
+from . import methods
+from . import domains as d
+
+# Constants
+FRAME_METHOD = 1
+FRAME_HEADER = 2
+FRAME_BODY = 3
+FRAME_HEARTBEAT = 8
+FRAME_MIN_SIZE = 4096
+FRAME_END = 206
 
 
-class Frame:
-    """Base class for all AMQP frames."""
+def grouper(iterable, n, fillvalue=None):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
+    args = [iter(iterable)] * n
+    return itertools.zip_longest(*args, fillvalue=fillvalue)
 
-    frame_type = None
-    """Frame type according to the spec, subclasses must provide this."""
 
-    payload_cls = None
-    """Payload implementation, subclasses must provide this."""
+class Properties(c.Construct):
+    """Content header properties have the following format:
 
-    size = None
-    """Frame size in bytes."""
+    0                2
+    +----------------+-------------- ---
+    | Property flags | Property list ...
+    +----------------+-------------- ---
+          Short
 
-    METADATA_SIZE = (
-        UnsignedByte._STRUCT_SIZE +  # frame_type
-        UnsignedShort._STRUCT_SIZE +  # channel_id
-        UnsignedLong._STRUCT_SIZE +  # payload_siz
-        UnsignedByte._STRUCT_SIZE  # frame_end
-    )
-    """How many bytes from frame_max size are taken by the metadata:
-    frame type, channel id, payload size and frame end byte.
+    * The property flags are an array of bits that indicate
+      the presence or absence of each property value in sequence.
+      The bits are ordered from most high to low - bit 15 indicates
+      the first property.
+
+    * The property flags can specify more than 16 properties.
+      If the last bit (0) is set, this indicates that a further property
+      flags field follows. There are many property flags fields as needed.
+
+    * The property values are class-specific AMQP data fields.
+
+    * Bit properties are indicated ONLY by their respective property flag
+      (1 or 0) and are never present in the property list.
     """
 
-    def __init__(self, channel_id, payload):
-        self.channel_id = channel_id
-        self.payload = payload
+    # pylint: disable=protected-access
 
-        self.size = self.METADATA_SIZE + self.payload.size
+    def __init__(self, *subcons):
+        super().__init__()
+        # Group all properties into groups of 15 properties,
+        # 16th bit indicates the contiuation of properties.
+        flags = [prop.name / c.Default(c.Flag, 0)
+                 for group in grouper(subcons, 15, c.Padding(1))
+                 for prop in list(group) + [c.Const(c.Flag, 1)]]
+        # Set the last bit to 0, as there's no more contiuation.
+        if flags:
+            flags[-1].value = 0
+        self.flags = c.Struct(*flags)
 
-    @classmethod
-    def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
-        """Instantiates a `Frame` subclass from the byte stream according to
-        the specification, 2.3.5.
+        def is_bit(subcon):
+            while True:
+                if isinstance(subcon, c.BitsInteger) and subcon.length == 1:
+                    return True
+                subcon = getattr(subcon, 'subcon', None)
+                if subcon is None:
+                    break
+            return False
 
-        Deserializing some frames requires to read an unspecified amount
-        of data (possibly discovered within a previous frame), in such
-        cases `body_chunk_size` parameter is useful.
+        self.subcons = [subcon for subcon in subcons if not is_bit(subcon)]
 
-        """
-        frame_type = types.UnsignedByte.from_bytestream(stream)
-        if frame_type == 65:
-            # Not a real frame type - just b'A' from b'AMQP'
-            stream.seek(stream.tell() - 1)
-            return ProtocolHeaderFrame.from_bytestream(stream)
+    def _parse(self, stream, context, path):
+        flags = self.flags._parse(stream, context, path)
+        obj = c.Container()
+        for subcon in self.subcons:
+            if flags[subcon.name]:
+                value = subcon._parse(stream, context, path)
+                obj[subcon.name] = value
+        return obj
 
-        channel_id = types.UnsignedShort.from_bytestream(stream)
-        # UnsignedLong payload size + 'size' of octets makes ByteArray useful
-        payload_bytes = types.ByteArray.from_bytestream(stream)
-        end = types.UnsignedByte.from_bytestream(stream)
-        # Fail fast if `end` is not what we expect
-        if end != FRAME_END:
-            raise ValueError('Frame end, got {!r} expected {!r}'.format(
-                end, FRAME_END
-            ))
-
-        frame_cls = FRAMES[frame_type]
-        payload_stream = io.BytesIO(payload_bytes)
-        payload = frame_cls.payload_cls.from_bytestream(
-            payload_stream, body_chunk_size=body_chunk_size
-        )
-
-        return frame_cls(channel_id, payload)
-
-    def to_bytestream(self, stream: io.BytesIO):
-        """Serializes the frame into the byte stream according to the
-        specification, 2.3.5."""
-        buf = io.BytesIO()
-        self.payload.to_bytestream(buf)
-
-        types.UnsignedByte(self.frame_type).to_bytestream(stream)
-        types.UnsignedShort(self.channel_id).to_bytestream(stream)
-        types.UnsignedLong(buf.tell()).to_bytestream(stream)
-        stream.write(buf.getvalue())
-        types.UnsignedByte(FRAME_END).to_bytestream(stream)
-
-    def __eq__(self, other):
-        return (self.size == other.size and
-                self.channel_id == other.channel_id and
-                self.payload == other.payload)
-
-
-class Payload:
-    """Base class for all payload classes."""
-
-    size = None
-    """Payload size in bytes. Subclasses must provide this attribute."""
-
-    @classmethod
-    def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
-        """Deserialize the payload from the byte stream."""
-        raise NotImplementedError
-
-    def to_bytestream(self, stream: io.BytesIO):
-        """Serialize the payload to the byte stream."""
-        raise NotImplementedError
-
-    def __eq__(self, other):
-        raise NotImplementedError
-
-
-class MethodPayload(Payload):
-    """Generic AMQP method payload."""
-
-    def __init__(self, class_id, method_id, **fields):
-        self.class_id = class_id
-        self.method_id = method_id
-        self.fields = fields
-
-        for name, value in fields.items():
-            setattr(self, name, value)
-
-    @classmethod
-    def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
-        class_id = types.UnsignedShort.from_bytestream(stream)
-        klass = CLASS_BY_ID[class_id]
-        method_id = types.UnsignedShort.from_bytestream(stream)
-        method = klass.METHOD_BY_ID[method_id]
-
-        signature = inspect.signature(method).parameters
-        fields = collections.OrderedDict()
-        bit_names = []
-        number_of_bits = 0
-        for name, parameter in signature.items():
-            if name == 'self':
-                continue
-            amqptype = parameter.annotation
-            if issubclass(amqptype, types.Bool):
-                number_of_bits += 1
-                bit_names.append(name)
-                continue
-            elif number_of_bits:
-                # We have some bools but this next fiels is not a bool
-                bits = types.Bool.many_from_bytestream(stream, number_of_bits)
-                for bit_name, bit in zip(bit_names, bits):
-                    fields[bit_name] = bit
-                number_of_bits = 0
-                bit_names.clear()
-
-            fields[name] = amqptype.from_bytestream(stream)
-
-        if number_of_bits:
-            bits = types.Bool.many_from_bytestream(stream, number_of_bits)
-            for bit_name, bit in zip(bit_names, bits):
-                fields[bit_name] = bit
-            number_of_bits = 0
-            bit_names.clear()
-        return cls(class_id, method_id, fields)
-
-    def to_bytestream(self, stream: io.BytesIO):
-        types.UnsignedShort(self.class_id).to_bytestream(stream)
-        types.UnsignedShort(self.method_id).to_bytestream(stream)
-        bits = []
-        for field in self.field.values():
-            if isinstance(field, types.Bool):
-                bits.append(field)
-            else:
-                if bits:
-                    types.Bool.many_to_bytestream(bits, stream)
-                    bits = []
-                field.to_bytestream(stream)
-
-        if bits:
-            types.Bool.many_to_bytestream(bits, stream)
-
-    def __eq__(self, other):
-        return (self.class_id == other.class_id and
-                self.method_id == other.method_id and
-                self.fields == other.fields)
-
-
-class ContentHeaderPayload(Payload):
-    """Specification 4.2.6.1.
-
-    0          2        4           12               14.
-    +----------+--------+-----------+----------------+------------- - -
-    | class-id | weight | body size | property flags | property list...
-    +----------+--------+-----------+----------------+------------- - -
-        short    short    long long       short          remainder...
-
-    """
-
-    def __init__(self, class_id, body_size, properties, weight=0):
-        self.class_id = class_id
-        self.body_size = body_size
-        self.properties = properties
-        self.weight = weight
-
-        properties_size = sum(value.size
-                              for value in self.properties.values()
-                              if value is not None)
-        self.size = (types.UnsignedShort._STRUCT_SIZE +  # class_id
-                     types.UnsignedShort._STRUCT_SIZE +  # weight
-                     types.UnsignedLongLong._STRUCT_SIZE +  # body_size
-                     types.UnsignedShort._STRUCT_SIZE +  # property_flags
-                     properties_size)
-
-    def __eq__(self, other):
-        return (self.size == other.size and
-                self.class_id == other.class_id and
-                self.body_size == other.body_size and
-                self.weight == other.weigth and
-                self.properties == other.properties)
-
-    @classmethod
-    def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
-        class_id = types.UnsignedShort.from_bytestream(stream)
-        weight = types.UnsignedShort.from_bytestream(stream)
-        assert weight == 0
-        body_size = types.UnsignedLongLong.from_bytestream(stream)
-        property_flags = types.UnsignedShort.from_bytestream(stream)
-
-        class_properties = PROPERTIES_BY_CLASS_ID[class_id]
-        number_of_properties = 15
-
-        properties = {}
-
-        for i, (name, amqptype) in enumerate(class_properties.items()):
-            pos = number_of_properties - i
-            value = None
-            if property_flags & (1 << pos):
-                value = amqptype.from_bytestream(stream)
-            properties[name] = value
-
-        return cls(class_id, body_size, properties, weight)
-
-    def to_bytestream(self, stream: io.BytesIO):
-        types.UnsignedShort(self.class_id).to_bytestream(stream)
-        types.UnsignedShort(self.weight).to_bytestream(stream)
-        types.UnsignedLongLong(self.body_size).to_bytestream(stream)
-
-        properties = bytearray()
-        property_flags = 0
-        bitshift = 15
-
-        for name, value in self.properties.items():
+    def _build(self, obj, stream, context, path):
+        self.flags._build(obj, stream, context, path)
+        for subcon in self.subcons:
+            value = obj.get(subcon.name)
             if value is not None:
-                property_flags |= (1 << bitshift)
-                properties += value.pack()
-            bitshift -= 1
+                subcon._build(value, stream, context, path)
 
-        types.UnsignedShort(property_flags).to_bytestream(stream)
-        stream.write(properties)
-
-
-class ContentBodyPayload(Payload):
-    """Specification 4.2.6.2.
-
-    +-----------------------+ +-----------+
-    | Opaque binary payload | | frame-end |
-    +-----------------------+ +-----------+
-
-    """
-
-    def __init__(self, data):
-        self.data = data
-
-        self.size = len(data)
-
-    def __eq__(self, other):
-        return self.size == other.size and self.data == other.data
-
-    @classmethod
-    def from_bytestream(cls, stream, body_chunk_size):
-        return cls(stream.read(body_chunk_size))
-
-    def to_bytestream(self, stream):
-        stream.write(self.data)
-
-
-class HeartbeatPayload(Payload):
-    """Specification 4.2.7.
-
-    0     1     2     3           4.
-    +-----+-----+-----+-----------+
-    | 0x8 | 0x0 | 0x0 | frame-end |
-    +-----+-----+-----+-----------+
-
-    """
-
-    def __init__(self):
-        self.data = b''
-
-        self.size = 0
-
-    def __eq__(self, other):
-        return self.size == other.size and self.data == other.data
-
-    @classmethod
-    def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
-        return cls()
-
-    def to_bytestream(self, stream: io.BytesIO):
-        types.ByteArray(self.data).to_bytestream(stream)
-
-
-class ProtocolHeaderPayload(Payload):
-    """Specification 4.2.2.
-
-    0   1   2   3   4   5   6   7   8.
-    +---+---+---+---+---+---+---+---+
-    |'A'|'M'|'Q'|'P'| 0 | 0 | 9 | 1 |
-    +---+---+---+---+---+---+---+---+
-
-    """
-
-    PREFIX = b'AMQP\x00'
-
-    def __init__(self,
-                 protocol_major=0,
-                 protocol_minor=9,
-                 protocol_revision=1):
-        self.protocol_major = protocol_major
-        self.protocol_minor = protocol_minor
-        self.protocol_revision = protocol_revision
-
-        self.size = 8
-
-    def __eq__(self, other):
-        return all(
-            getattr(self, attr) == getattr(other, attr)
-            for attr in
-            ['protocol_major', 'protocol_minor', 'protocol_revision']
+    def _sizeof(self, context, path):
+        return self.flags.sizeof() + sum(
+            subcon.sizeof() for subcon in self.subcons
         )
 
-    @classmethod
-    def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
-        protocol = stream.read(5)
-        if protocol != b'AMQP\x00':
-            raise TypeError
-        protocol_major = types.UnsignedByte.from_bytestream(stream)
-        protocol_minor = types.UnsignedByte.from_bytestream(stream)
-        protocol_revision = types.UnsignedByte.from_bytestream(stream)
-        return cls(protocol_major, protocol_minor, protocol_revision)
 
-    def to_bytestream(self, stream: io.BytesIO):
-        stream.write(self.PREFIX)
-        types.UnsignedByte(self.protocol_major).to_bytestream(stream)
-        types.UnsignedByte(self.protocol_minor).to_bytestream(stream)
-        types.UnsignedByte(self.protocol_revision).to_bytestream(stream)
+BasicProperties = 'BasicProperties' / Properties(
+    'content_type' / d.Shortstr,
+    'content_encoding' / d.Shortstr,
+    'headers' / d.Table,
+    'delivery_mode' / c.Enum(d.Octet, transient=1, persistent=2),
+    'priority' / d.Octet,
+    'correlation_id' / d.Shortstr,
+    'reply_to' / d.Shortstr,
+    'expiration' / d.Shortstr,
+    'message_id' / d.Shortstr,
+    'timestamp' / d.Timestamp,
+    'type' / d.Shortstr,
+    'user_id' / d.Shortstr,
+    'app_id' / d.Shortstr,
+    # Deprecated
+    'cluster_id' / c.Const(d.Shortstr, ''),
+)
 
+ContentHeaderPayload = 'ContentHeaderPayload' / c.Struct(
+    'class_id' / d.Short,
+    'weight' / c.Const(d.Short, value=0),
+    'body_size' / d.Longlong,
+    'properties' / c.Switch(c.this.class_id, cases={
+        60: BasicProperties,
+    }, default=Properties()),
+)
 
-class MethodFrame(Frame):
-    """Method frames carry the high-level protocol commands (which are called
-    "methods"). One method frame carries one command.
+ContentBodyPayload = 'ContentBodyPayload' / c.Struct(
+    'content' / c.GreedyBytes,
+)
 
-    Specification 2.3.5.1, 4.2.4.
+MethodPayload = 'MethodPayload' / c.Struct(
+    'class_id' / d.Short,
+    'method_id' / d.Short,
+    'arguments' / c.Embedded(c.Switch(
+        lambda ctx: (ctx.class_id, ctx.method_id),
+        cases=methods.IDS_TO_METHODS,
+    ))
+)
 
-    """
+HeartbeatPayload = 'HeartbeatPayload' / c.Struct()
 
-    frame_type = FRAME_METHOD
-    payload_cls = MethodPayload
-
-
-class ContentHeaderFrame(Frame):
-    """Content is the application data we carry from client-to-client via the
-    AMQP server. Content is, roughly speaking, a set of properties plus a
-    binary data part. The set of allowed properties are defined by the Basic
-    class, and these form the "content header frame". The data can be any size,
-    and MAY be broken into several (or many) chunks, each forming a "content
-    body frame".
-
-    Speficiation 2.3.5.2, 4.2.6.
-
-    """
-
-    frame_type = FRAME_HEADER
-    payload_cls = ContentHeaderPayload
-
-
-class ContentBodyFrame(Frame):
-    """The content body payload is an opaque binary block followed by a frame
-    end octet. The content body can be split into as many frames as needed. The
-    maximum size of the frame payload is agreed upon by both peers during
-    connection negotiation.
-
-    Specification 2.3.5.2, 4.2.6.2.
-
-    """
-
-    frame_type = FRAME_BODY
-    payload_cls = ContentBodyPayload
-
-
-class HeartbeatFrame(Frame):
-    """Heartbeat frames tell the recipient that the sender is still alive. The
-    rate and timing of heartbeat frames is negotiated during connection tuning.
-
-    Specification 2.3.5.3, 4.2.7.
-
-    """
-
-    frame_type = FRAME_HEARTBEAT
-    payload_cls = HeartbeatPayload
-    expected_channel_id = 0
-
-    def __init__(self, channel_id, payload):
-        assert channel_id == self.expected_channel_id
-        super().__init__(channel_id, payload)
-
-
-class ProtocolHeaderFrame(Frame):
-    """This is actually not a frame according to the protocol - just bytes,
-    but it's quite handy to pretend it is a frame to unify
-    `input bytes -> frames -> output bytes` sequence.
-
-    Specification 4.2.2.
-    """
-
-    payload_cls = ProtocolHeaderPayload
-
-    @classmethod
-    def from_bytestream(cls, stream: io.BytesIO, body_chunk_size=None):
-        payload = cls.payload_cls.from_bytestream(stream, body_chunk_size)
-        return cls(None, payload)
-
-    def to_bytestream(self, stream: io.BytesIO):
-        self.payload.to_bytestream(stream)
-
-
-# pylint: disable=no-member
-FRAMES = {cls.frame_type: cls for cls in Frame.__subclasses__()}
-
-# Just in case somebody will want to add non-basic stuff...
-PROPERTIES_BY_CLASS_ID = {
-    60: basic.PROPERTIES,
-}
+Frame = 'Frame' / c.Struct(
+    'frame_type' / c.Enum(
+        d.UnsignedByte,
+        method=FRAME_METHOD,
+        header=FRAME_HEADER,
+        body=FRAME_BODY,
+        heartbeat=FRAME_HEARTBEAT,
+    ),
+    'channel_id' / d.UnsignedShort,
+    'payload' / c.Prefixed(
+        d.Longlong,  # payload_size
+        c.Switch(c.this.frame_type, cases={
+            'method': MethodPayload,
+            'header': ContentHeaderPayload,
+            'body': ContentBodyPayload,
+            'heartbeat': HeartbeatPayload,
+        }),
+    ),
+    'frame_end' / c.Const(d.UnsignedByte, FRAME_END),
+)
