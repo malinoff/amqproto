@@ -1,3 +1,11 @@
+"""
+amqproto.domains
+~~~~~~~~~~~~~~~~
+
+AMQP domains (types).
+"""
+# pylint: disable=missing-docstring
+# pylint: disable=invalid-name
 import re
 import decimal
 import functools
@@ -98,6 +106,8 @@ def _py_type_to_amqp_none(value):
 class TableAdapter(c.Adapter):
 
     def _encode(self, obj, context):
+        if obj is None:
+            return {}
         entries = []
         for key, value in obj.items():
             # pylint: disable=assignment-from-no-return

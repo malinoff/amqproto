@@ -1,3 +1,10 @@
+"""
+amqproto.replies
+~~~~~~~~~~~~~~~~
+
+AMQP replies (connection or channel exceptions).
+"""
+
 from itertools import chain
 
 

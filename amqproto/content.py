@@ -1,27 +1,19 @@
-import itertools
+"""
+amqproto.content
+~~~~~~~~~~~~~~~~
 
+AMQP content.
+"""
+# flake8: noqa=E701
+# pylint: disable=too-few-public-methods
+import attr
 import construct as c
 
-from . import methods
 from . import domains as d
-
-# Constants
-FRAME_METHOD = 1
-FRAME_HEADER = 2
-FRAME_BODY = 3
-FRAME_HEARTBEAT = 8
-FRAME_MIN_SIZE = 4096
-FRAME_END = 206
+from .utils import make_struct, grouper
 
 
-def grouper(iterable, n, fillvalue=None):
-    "Collect data into fixed-length chunks or blocks"
-    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
-    args = [iter(iterable)] * n
-    return itertools.zip_longest(*args, fillvalue=fillvalue)
-
-
-class Properties(c.Construct):
+class PropertiesStruct(c.Construct):
     """Content header properties have the following format:
 
     0                2
@@ -59,7 +51,7 @@ class Properties(c.Construct):
             flags[-1].value = 0
         self.flags = c.Struct(*flags)
 
-        def is_bit(subcon):
+        def _is_bit(subcon):
             while True:
                 if isinstance(subcon, c.BitsInteger) and subcon.length == 1:
                     return True
@@ -68,7 +60,7 @@ class Properties(c.Construct):
                     break
             return False
 
-        self.subcons = [subcon for subcon in subcons if not is_bit(subcon)]
+        self.subcons = [subcon for subcon in subcons if not _is_bit(subcon)]
 
     def _parse(self, stream, context, path):
         flags = self.flags._parse(stream, context, path)
@@ -92,65 +84,54 @@ class Properties(c.Construct):
         )
 
 
-BasicProperties = 'BasicProperties' / Properties(
-    'content_type' / d.Shortstr,
-    'content_encoding' / d.Shortstr,
-    'headers' / d.Table,
-    'delivery_mode' / c.Enum(d.Octet, transient=1, persistent=2),
-    'priority' / d.Octet,
-    'correlation_id' / d.Shortstr,
-    'reply_to' / d.Shortstr,
-    'expiration' / d.Shortstr,
-    'message_id' / d.Shortstr,
-    'timestamp' / d.Timestamp,
-    'type' / d.Shortstr,
-    'user_id' / d.Shortstr,
-    'app_id' / d.Shortstr,
+class Properties:
+    """Base class for content properties."""
+
+    struct = None
+
+    BY_ID = {}
+
+    def __init_subclass__(cls, class_id, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.class_id = attr.ib(default=class_id, init=False)
+        cls.struct = make_struct(
+            cls, exclude_attrs={'class_id'}, struct=PropertiesStruct
+        )
+        cls.BY_ID[class_id] = cls
+
+
+@attr.s()
+class BasicProperties(Properties, class_id=60):
+    """Basic properties."""
+
+    content_type: d.ShortStr = attr.ib(None)
+    content_encoding: d.ShortStr = attr.ib(None)
+    headers: d.Table = attr.ib(None)
+    delivery_mode: d.Octet = attr.ib(None)
+    priority: d.Octet = attr.ib(None)
+    correlation_id: d.ShortStr = attr.ib(None)
+    reply_to: d.ShortStr = attr.ib(None)
+    expiration: d.ShortStr = attr.ib(None)
+    message_id: d.ShortStr = attr.ib(None)
+    timestamp: d.Timestamp = attr.ib(None)
+    type: d.ShortStr = attr.ib(None)
+    user_id: d.ShortStr = attr.ib(None)
+    app_id: d.ShortStr = attr.ib(None)
     # Deprecated
-    'cluster_id' / c.Const(d.Shortstr, ''),
-)
+    cluster_id: d.ShortStr = attr.ib(default=None, init=False, repr=False)
 
-ContentHeaderPayload = 'ContentHeaderPayload' / c.Struct(
-    'class_id' / d.Short,
-    'weight' / c.Const(d.Short, value=0),
-    'body_size' / d.Longlong,
-    'properties' / c.Switch(c.this.class_id, cases={
-        60: BasicProperties,
-    }, default=Properties()),
-)
 
-ContentBodyPayload = 'ContentBodyPayload' / c.Struct(
-    'content' / c.GreedyBytes,
-)
+@attr.s(slots=True)
+class Content:
+    """Describes an AMQP content."""
+    class_id: int = attr.ib()
+    body_size: int = attr.ib()
+    properties: Properties = attr.ib()
+    delivery_info = attr.ib(default=None)
+    body: bytes = attr.ib(default=b'')
 
-MethodPayload = 'MethodPayload' / c.Struct(
-    'class_id' / d.Short,
-    'method_id' / d.Short,
-    'arguments' / c.Embedded(c.Switch(
-        lambda ctx: (ctx.class_id, ctx.method_id),
-        cases=methods.IDS_TO_METHODS,
-    ))
-)
-
-HeartbeatPayload = 'HeartbeatPayload' / c.Struct()
-
-Frame = 'Frame' / c.Struct(
-    'frame_type' / c.Enum(
-        d.UnsignedByte,
-        method=FRAME_METHOD,
-        header=FRAME_HEADER,
-        body=FRAME_BODY,
-        heartbeat=FRAME_HEARTBEAT,
-    ),
-    'channel_id' / d.UnsignedShort,
-    'payload' / c.Prefixed(
-        d.Longlong,  # payload_size
-        c.Switch(c.this.frame_type, cases={
-            'method': MethodPayload,
-            'header': ContentHeaderPayload,
-            'body': ContentBodyPayload,
-            'heartbeat': HeartbeatPayload,
-        }),
-    ),
-    'frame_end' / c.Const(d.UnsignedByte, FRAME_END),
-)
+    def complete(self):
+        """AMQP allows to break content into multiple chunks for sending.
+        This method tells if the content is received completely.
+        """
+        return len(self.body) == self.body_size
