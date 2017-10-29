@@ -5,76 +5,63 @@ amqproto.settings
 AMQP connection settings.
 """
 
-from .replies import HardError
+import platform
+import pkg_resources
+
+import attr
 
 FRAME_MIN_SIZE = 4096
 
+# The properties SHOULD contain at least these fields:
+# * "product", giving the name of the client product,
+# * "version", giving the name of the client version,
+# * "platform", giving the name of the operating system,
+# * "copyright", if appropriate, and
+# * "information", giving other general information.
+DEFAULT_CLIENT_PROPERTIES = {
+    'product': 'amqproto',
+    'version': str(pkg_resources.get_distribution('amqproto').version),
+    'platform': platform.platform(),
+    'copyright': '(c) Dmitry Malinovsky (aka malinoff) and contributors',
+    'information': '',
+}
 
-class Settings:
+
+@attr.s()
+class Settings:  # pylint: disable=too-few-public-methods
     """Connection settings: client-side, server-side and
     negotiated parameters.
+
+    :param properties: a dictionary of arbitrary properties.
+        Unlikely needs to be ever changed.
+    :param locale: preferred locale. Unlikely needs to be ever changed.
+    :param channel_max: limit maximum channels. 0 means no specific limit.
+        Unlikely needs to be ever changed.
+    :param frame_max: limit maximum frame size. 0 means no specific limit.
+        Unlikely needs to be ever changed.
+    :param heartbeat: heartbeat delay in seconds. 0 means no heartbeats,
+        which is not recommended.
     """
 
-    def __init__(self, client_properties, locale, mechanism,
-                 channel_max, frame_max, heartbeat):
-        self.client = {
-            'properties': client_properties,
-            'locale': locale,
-            'mechanism': mechanism,
-            'channel_max': channel_max,
-            'frame_max': frame_max,
-            'heartbeat': heartbeat,
-        }
-        self.server = {
-            'properties': {},
-            'locales': [],
-            'mechanisms': [],
-            'channel_max': None,
-            'frame_max': None,
-            'heartbeat': None,
-        }
-        self.negotiated = {
-            'locale': None,
-            'mechanism': None,
-            'channel_max': None,
-            'frame_max': FRAME_MIN_SIZE,
-            'heartbeat': None,
-        }
-        self.secure = []
+    # Either 'client', or 'server', or 'negotiated'
+    type: bool = attr.ib(default='client')
 
-    def negotiate_handshake(self, server_properties, mechanisms, locales):
-        """Negotiate preferred SASL mechanism and locale."""
-        self.server.update({
-            'properties': server_properties,
-            'mechanisms': mechanisms,
-            'locales': locales,
-        })
-        if self.client['mechanism'] not in mechanisms:
-            raise HardError('unable to agree on auth mechanism')
-        if self.client['locale'] not in locales:
-            raise HardError('unable to agree on locale')
-        self.negotiated.update({
-            'mechanism': self.client['mechanism'],
-            'locale': self.client['locale']
-        })
+    properties: dict = attr.ib(default=None)
+    locales: str = attr.ib(default='en_US')
+    mechanisms: str = attr.ib(default=None)
+    channel_max: int = attr.ib(default=0)
+    frame_max: int = attr.ib(default=0)
+    heartbeat: int = attr.ib(default=60)
 
-    def secure_step(self, challenge, response):
-        """Remember about a single SASL challenge -> response cycle.
-        Can help debugging easier.
-        """
-        self.secure.append({
-            'challenge': challenge,
-            'response': response,
-        })
+    def __attrs_post_init__(self):
+        if self.type == 'client':
+            if self.properties is None:
+                self.properties = DEFAULT_CLIENT_PROPERTIES
+            # pylint: disable=no-member
+            if len(self.locales.split(' ')) > 1:
+                raise RuntimeError('more than one locale is not supported')
+            if len(self.mechanisms.split(' ')) > 1:
+                raise RuntimeError('more than one mechanism is not supported')
 
-    def negotiate_tune(self, channel_max, frame_max, heartbeat):
-        """Negotiate preferred channel_max, frame_max and heartbeat values."""
-        self.server.update({
-            'channel_max': channel_max,
-            'frame_max': frame_max,
-            'heartbeat': heartbeat,
-        })
-        for name in ('channel_max', 'frame_max', 'heartbeat'):
-            client_value, server_value = self.client[name], self.server[name]
-            negotiate = max if client_value == 0 or server_value == 0 else min
-            self.negotiated[name] = negotiate(client_value, server_value)
+        if self.type == 'negotiated' and self.frame_max == 0:
+            self.frame_max = FRAME_MIN_SIZE

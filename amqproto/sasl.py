@@ -40,6 +40,12 @@ class PLAIN(SASL):
     def handle_challenge(self, challenge: bytes) -> bytes:
         raise RuntimeError('PLAIN SASL method does not support challenging')
 
+    def __repr__(self):
+        # Do not leak password via repr
+        return '<PLAIN username={} password=***>'.format(
+            self.username.decode('utf-8')
+        )
+
 
 class AMQPLAIN(SASL):
     """Non-standard version of PLAIN as defined by the AMQP 0-8 specification.
@@ -60,3 +66,7 @@ class AMQPLAIN(SASL):
 
     def handle_challenge(self, challenge: bytes) -> bytes:
         raise RuntimeError('AMQPLAIN SASL method does not support challenging')
+
+    def __repr__(self):
+        # Do not leak password via repr
+        return '<AMQPLAIN username={} password=***>'.format(self.username)
