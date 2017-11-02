@@ -6,9 +6,6 @@ AMQP methods.
 """
 # flake8: noqa=E701
 # pylint: disable=missing-docstring
-# pylint: disable=too-few-public-methods
-
-import warnings
 
 import attr
 import construct as c
@@ -31,6 +28,7 @@ class Method:
         cls.followed_by_content = followed_by_content
         if followed_by_content:
             cls.content = attr.ib()
+
         cls.struct = make_struct(cls, exclude_attrs={'content'})
 
         cls.class_id = attr.ib(default=class_id, init=False)
@@ -113,8 +111,8 @@ class ConnectionOpenOK(Method, class_id=10, method_id=41,
 class ConnectionClose(Method, class_id=10, method_id=50):
     reply_code: d.ReplyCode = attr.ib()
     reply_text: d.ReplyText = attr.ib()
-    class_id: d.ClassId = attr.ib()
-    method_id: d.MethodId = attr.ib()
+    reply_class_id: d.ClassId = attr.ib()
+    reply_method_id: d.MethodId = attr.ib()
 
 
 @attr.s()
@@ -151,8 +149,8 @@ class ChannelFlowOK(Method, class_id=20, method_id=21,
 class ChannelClose(Method, class_id=20, method_id=40):
     reply_code: d.ReplyCode = attr.ib()
     reply_text: d.ReplyText = attr.ib()
-    class_id: d.ClassId = attr.ib()
-    method_id: d.MethodId = attr.ib()
+    reply_class_id: d.ClassId = attr.ib()
+    reply_method_id: d.MethodId = attr.ib()
 
 
 @attr.s()
@@ -166,13 +164,13 @@ class ExchangeDeclare(Method, class_id=40, method_id=10):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     exchange: d.ExchangeName = attr.ib()
-    type: d.Shortstr = attr.ib(default='direct')
-    passive: d.Bit = attr.ib(default=False)
-    durable: d.Bit = attr.ib(default=False)
-    auto_delete: d.Bit = attr.ib(default=False)
-    internal: d.Bit = attr.ib(default=False)
-    no_wait: d.NoWait = attr.ib(default=False)
-    arguments: d.Table = attr.ib(default=None)
+    type: d.Shortstr = attr.ib()
+    passive: d.Bit = attr.ib()
+    durable: d.Bit = attr.ib()
+    auto_delete: d.Bit = attr.ib()
+    internal: d.Bit = attr.ib()
+    no_wait: d.NoWait = attr.ib()
+    arguments: d.Table = attr.ib()
 
 
 @attr.s()
@@ -186,8 +184,8 @@ class ExchangeDelete(Method, class_id=40, method_id=20):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     exchange: d.ExchangeName = attr.ib()
-    if_unused: d.Bit = attr.ib(default=False)
-    no_wait: d.NoWait = attr.ib(default=False)
+    if_unused: d.Bit = attr.ib()
+    no_wait: d.NoWait = attr.ib()
 
 
 @attr.s()
@@ -201,10 +199,10 @@ class ExchangeBind(Method, class_id=40, method_id=30):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     destination: d.ExchangeName = attr.ib()
-    source: d.ExchangeName = attr.ib(default='')
-    routing_key: d.Shortstr = attr.ib(default='')
-    no_wait: d.NoWait = attr.ib(default=False)
-    arguments: d.Table = attr.ib(default=None)
+    source: d.ExchangeName = attr.ib()
+    routing_key: d.Shortstr = attr.ib()
+    no_wait: d.NoWait = attr.ib()
+    arguments: d.Table = attr.ib()
 
 
 @attr.s()
@@ -218,10 +216,10 @@ class ExchangeUnbind(Method, class_id=40, method_id=40):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     destination: d.ExchangeName = attr.ib()
-    source: d.ExchangeName = attr.ib(default='')
-    routing_key: d.Shortstr = attr.ib(default='')
-    no_wait: d.NoWait = attr.ib(default=False)
-    arguments: d.Table = attr.ib(default=None)
+    source: d.ExchangeName = attr.ib()
+    routing_key: d.Shortstr = attr.ib()
+    no_wait: d.NoWait = attr.ib()
+    arguments: d.Table = attr.ib()
 
 
 @attr.s()
@@ -235,12 +233,12 @@ class QueueDeclare(Method, class_id=50, method_id=10):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     queue: d.QueueName = attr.ib()
-    passive: d.Bit = attr.ib(default=False)
-    durable: d.Bit = attr.ib(default=False)
-    exclusive: d.Bit = attr.ib(default=False)
-    auto_delete: d.Bit = attr.ib(default=False)
-    no_wait: d.NoWait = attr.ib(default=False)
-    arguments: d.Table = attr.ib(default=None)
+    passive: d.Bit = attr.ib()
+    durable: d.Bit = attr.ib()
+    exclusive: d.Bit = attr.ib()
+    auto_delete: d.Bit = attr.ib()
+    no_wait: d.NoWait = attr.ib()
+    arguments: d.Table = attr.ib()
 
 
 @attr.s()
@@ -256,10 +254,10 @@ class QueueBind(Method, class_id=50, method_id=20):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     queue: d.QueueName = attr.ib()
-    exchange: d.ExchangeName = attr.ib(default='')
-    routing_key: d.Shortstr = attr.ib(default='')
-    no_wait: d.NoWait = attr.ib(default=False)
-    arguments: d.Table = attr.ib(default=None)
+    exchange: d.ExchangeName = attr.ib()
+    routing_key: d.Shortstr = attr.ib()
+    no_wait: d.NoWait = attr.ib()
+    arguments: d.Table = attr.ib()
 
 
 @attr.s()
@@ -272,9 +270,9 @@ class QueueUnbind(Method, class_id=50, method_id=50):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     queue: d.QueueName = attr.ib()
-    exchange: d.ExchangeName = attr.ib(default='')
-    routing_key: d.Shortstr = attr.ib(default='')
-    arguments: d.Table = attr.ib(default=None)
+    exchange: d.ExchangeName = attr.ib()
+    routing_key: d.Shortstr = attr.ib()
+    arguments: d.Table = attr.ib()
 
 
 @attr.s()
@@ -288,7 +286,7 @@ class QueuePurge(Method, class_id=50, method_id=30):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     queue: d.QueueName = attr.ib()
-    no_wait: d.NoWait = attr.ib(default=False)
+    no_wait: d.NoWait = attr.ib()
 
 
 @attr.s()
@@ -302,9 +300,9 @@ class QueueDelete(Method, class_id=50, method_id=40):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     queue: d.QueueName = attr.ib()
-    if_unused: d.Bit = attr.ib(default=False)
-    if_empty: d.Bit = attr.ib(default=False)
-    no_wait: d.NoWait = attr.ib(default=False)
+    if_unused: d.Bit = attr.ib()
+    if_empty: d.Bit = attr.ib()
+    no_wait: d.NoWait = attr.ib()
 
 
 @attr.s()
@@ -316,8 +314,8 @@ class QueueDeleteOK(Method, class_id=50, method_id=41,
 @attr.s()
 class BasicQos(Method, class_id=60, method_id=10):
     prefetch_size: d.Long = attr.ib()
-    prefetch_count: d.Short = attr.ib(default=0)
-    global_: d.Bit = attr.ib(default=False)
+    prefetch_count: d.Short = attr.ib()
+    global_: d.Bit = attr.ib()
 
 
 @attr.s()
@@ -331,17 +329,11 @@ class BasicConsume(Method, class_id=60, method_id=20):
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     queue: d.QueueName = attr.ib()
     consumer_tag: d.ConsumerTag = attr.ib()
-    no_local: d.NoLocal = attr.ib(default=False)
-    no_ack: d.NoAck = attr.ib(default=False)
-    exclusive: d.Bit = attr.ib(default=False)
-    no_wait: d.NoWait = attr.ib(default=False)
-    arguments: d.Table = attr.ib(default=None)
-
-    def __attrs_post_init__(self):
-        if self.consumer_tag == '' and self.no_wait:
-            warnings.warn('creating consumer that cannot be cancelled, '
-                          'consider passing a non-empty consumer_tag '
-                          'or do not pass no_wait=True')
+    no_local: d.NoLocal = attr.ib()
+    no_ack: d.NoAck = attr.ib()
+    exclusive: d.Bit = attr.ib()
+    no_wait: d.NoWait = attr.ib()
+    arguments: d.Table = attr.ib()
 
 
 @attr.s()

@@ -48,7 +48,7 @@ class Settings:  # pylint: disable=too-few-public-methods
 
     properties: dict = attr.ib(default=None)
     locales: str = attr.ib(default='en_US')
-    mechanisms: str = attr.ib(default=None)
+    mechanisms: str = attr.ib(default='')
     channel_max: int = attr.ib(default=0)
     frame_max: int = attr.ib(default=0)
     heartbeat: int = attr.ib(default=60)

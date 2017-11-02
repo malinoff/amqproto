@@ -1,42 +1,33 @@
-#import logging
-#logging.basicConfig(level=logging.DEBUG)
 import asyncio
 
 import pytest
 import requests
 
-from amqproto import protocol
-from amqproto.io.asyncio import Connection
+from amqproto import AMQPError
+from amqproto.adapters.asyncio_adapter import AsyncioConnection
 
 
 @pytest.fixture()
 async def connection():
-    async with Connection() as connection:
-        yield connection
+    async with AsyncioConnection() as conn:
+        yield conn
 
 
 @pytest.fixture()
 async def channel(connection):
-    async with connection.get_channel() as channel:
-        yield channel
+    async with connection.get_channel() as chan:
+        yield chan
 
 
 @pytest.mark.asyncio()
 async def test_can_connect():
-    async with Connection() as conn:
+    async with AsyncioConnection():
         pass
-
-@pytest.mark.asyncio()
-async def test_wrong_connection_times_out():
-    # We use management port here to simulate an unresponsible broker
-    with pytest.raises(asyncio.TimeoutError):
-        async with Connection(port=15672, connect_timeout=1):
-            pass
 
 
 @pytest.mark.asyncio()
 async def test_can_open_channel(connection):
-    async with connection.get_channel() as channel:
+    async with connection.get_channel():
         pass
 
 
@@ -47,8 +38,9 @@ async def test_can_declare_exchange(channel):
 
     def call_rabbit_for_exchange(exchange_name_):
         return requests.get(
-                'http://localhost:15672/api/exchanges/%2f/' + exchange_name_,
-                auth=('guest', 'guest'))
+            'http://localhost:15672/api/exchanges/%2f/' + exchange_name_,
+            auth=('guest', 'guest')
+        )
 
     assert call_rabbit_for_exchange(exchange_name).status_code == 200
     # now delete it
@@ -98,10 +90,11 @@ async def test_can_bind_queue_to_exchange(channel):
 @pytest.mark.asyncio()
 async def test_can_publish_and_get_messages(channel):
     await channel.queue_declare('hello')
-    message = protocol.BasicMessage(b'hello world')
+    message = b'hello world'
     await channel.basic_publish(message, exchange='', routing_key='hello')
-    received_message = await channel.basic_get('hello')
-    assert received_message.body == b'hello world'
+    response = await channel.basic_get('hello')
+    print(response)
+    assert response.content.body == b'hello world'
 
 
 @pytest.mark.asyncio()
@@ -110,7 +103,7 @@ async def test_can_produce_and_consume_messages(channel):
     reply = await channel.basic_consume('hello')
     consumer_tag = reply.consumer_tag
 
-    message = protocol.BasicMessage(b'hello world')
+    message = b'hello world'
     await channel.basic_publish(message, exchange='', routing_key='hello')
 
     async for received_message in channel.consumed_messages():
@@ -127,7 +120,7 @@ async def test_can_produce_and_consume_messages(channel):
 
 @pytest.mark.asyncio()
 async def test_mandatory_flag_handles_undelivered_messages(channel):
-    message = protocol.BasicMessage(b'some message')
+    message = b'some message'
     exchange_name = 'amqproto_test'
     await channel.exchange_declare(exchange_name)
 
@@ -150,7 +143,7 @@ async def test_mandatory_flag_handles_undelivered_messages(channel):
 async def test_mandatory_flag_on_existing_queue(channel):
     exchange_name = 'amq.direct'
     queue_name = 'amqproto_test_q'
-    message = protocol.BasicMessage(b'some message')
+    message = b'some message'
     await channel.queue_declare(queue_name)
     await channel.queue_bind(queue_name, exchange_name)
 
@@ -169,11 +162,19 @@ async def test_mandatory_flag_on_existing_queue(channel):
 
 @pytest.mark.asyncio()
 async def test_channel_errors_are_handled_properly(channel):
-    with pytest.raises(protocol.AMQPError):
+    with pytest.raises(AMQPError):
         await channel.queue_unbind('amqproto_test_q', '')
 
 
 @pytest.mark.asyncio()
 async def test_can_publish_strings(channel):
-    message = protocol.BasicMessage('this is a string, not bytes!')
+    message = 'this is a string, not bytes!'
     await channel.basic_publish(message)
+
+
+@pytest.mark.asyncio()
+async def test_heartbeats():
+    # Should not raise any connection errors
+    async with AsyncioConnection(heartbeat=1) as conn:
+        async with conn.get_channel():
+            await asyncio.sleep(4)

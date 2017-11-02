@@ -107,7 +107,7 @@ class TableAdapter(c.Adapter):
 
     def _encode(self, obj, context):
         if obj is None:
-            return {}
+            return []
         entries = []
         for key, value in obj.items():
             # pylint: disable=assignment-from-no-return
@@ -193,8 +193,8 @@ TableEntry = c.Struct(
     'key' / ShortStr,
     'value' / TableValue,
 )
-Table = TableAdapter(TableEntry[:])
-Array = TableValue[:]
+Table = c.Prefixed(UnsignedLong, TableAdapter(TableEntry[:]))
+Array = c.Prefixed(UnsignedLong, ArrayAdapter(TableValue[:]))
 
 DOMAIN_TO_LABEL = {value: key for key, value in LABEL_TO_DOMAIN.items()}
 # LazyBound can't be looked up, let's fix this
@@ -207,11 +207,13 @@ def _regex_check(regex, value):
         raise ValueError('{!r} does not match the following regex: {}'.format(
             value, regex
         ))
+    return True
 
 
 def _emptiness_check(value):
     if not value:
         raise ValueError('cannot be empty')
+    return True
 
 
 # Non-primitive domains

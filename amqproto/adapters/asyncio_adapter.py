@@ -1,112 +1,139 @@
 import asyncio
 
-from .. import methods
+from .. import replies
+from ..connection import Connection as _Connection
+from ..channel import Channel as _Channel, BaseChannel as _BaseChannel
 
 
-class Channel:
+class AsyncioBaseChannel(_BaseChannel):
 
-    def __init__(self, channel_id, connection, reader, writer):
-        self._conn = connection
-        self._chan = connection.channels[channel_id]
-
+    def __init__(self, reader, writer, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._reader = reader
         self._writer = writer
-
         self._response = asyncio.Queue(maxsize=1)
-        self._deliveries = asyncio.Queue()
 
-        self._outbound_handlers = {
-            methods.ExchangeBind: self._send_exchange_bind_unbind,
-            methods.ExchangeUnbind: self._send_exchange_bind_unbind,
-            methods.BasicConsume: self._send_basic_consume,
-            methods.BasicPublish: self._send_basic_publish,
-            methods.ConfirmSelect: self._send_confirm_select,
-        }
-
-        self._inbound_handlers = {
-            methods.ChannelFlow: self._handle_flow_ok,
-            methods.BasicConsumeOK: self._handle_basic_consume_ok,
-            methods.BasicDeliver: self._handle_basic_deliver,
-            methods.BasicAck: self._handle_basic_ack_nack,
-            methods.BasicNack: self._handle_basic_ack_nack,
-            methods.BasicReturn: self._handle_basic_return,
-            methods.TxSelectOK: self._handle_tx_select_ok,
-        }
-
-    async def send_method(self, method):
-        handler = self._outbound_handlers.get(method.__class__)
-        if handler is not None:
-            handler(method)
-        self._conn.method_to_send(method)
-        self._writer.write(self._conn.data_to_send())
-        await self._writer.drain()
+    def _prepare_for_sending(self, method):
+        super()._prepare_for_sending(method)
+        self._writer.write(self.data_to_send())
         if method.has_response():
-            response = await self._response.get()
-            assert response.__class__ in method.responses
-            return response
+            # No need to drain, we can only receive a response after
+            # a successful request is actually sent.
+            return self._response.get()
+        return self._writer.drain()
 
-    async def handle_method(self, method):
-        assert method.channel_id == self.channel_id
-        handler = self._handlers.get(method.__class__, self._response.put)
-        await handler(method)
-
-    def _send_exchange_bind_unbind(self, method):
-        self._conn.capable_of(
-            method.__class__, 'exchange_exchange_bindings'
-        )
-
-    def _send_basic_consume(self, method):
+    async def _receive_method(self, method):
+        # _method_handlers are defined in subclasses
+        handler = self._method_handlers.get(method.__class__)
+        if handler is not None:
+            fut = handler(method)
+            if fut is not None:
+                await fut
         if not method.has_response():
-            self._chan.add_consumer(method.consumer_tag)
+            # If the received method has responses, it means the server
+            # sent this method, not the client, thus the client doesn't
+            # wait for the reply and we shouldn't put the method into
+            # self._response
+            await self._response.put(method)
+        # TODO handle close
 
-    def _send_basic_publish(self, method):
-        self._chan.publish_needs_confirmations(method.content)
+    async def __aenter__(self):
+        await self.open()
+        return self
 
-    def _send_confirm_select(self, method):
-        self._conn.capable_of(
-            method.__class__, 'publisher_confirms'
+    async def __aexit__(self, exc_type, exc, traceback):
+        if exc is not None:
+            if not isinstance(exc, replies.AMQPError):
+                exc = replies.InternalError(repr(exc))
+            await self.close(
+                exc.reply_code, exc.reply_text, exc.class_id, exc.method_id,
+            )
+        else:
+            await self.close()
+
+
+class AsyncioChannel(AsyncioBaseChannel, _Channel):
+
+    async def open(self):
+        """Open the channel."""
+        await self._channel_open()
+
+    async def close(self, reply_code=200, reply_text='OK',
+                    class_id=0, method_id=0):
+        """Close the channel."""
+        if not self.closed:
+            await self._channel_close(
+                reply_code, reply_text, class_id, method_id
+            )
+
+
+class AsyncioConnection(AsyncioBaseChannel, _Connection):
+
+    def __init__(self, host='localhost', port=5672, *,
+                 ssl=None, flags=0, sock=None, local_addr=None,
+                 server_hostname=None, **kwargs):
+        super().__init__(reader=None, writer=None, **kwargs)
+        self._connect_args = {
+            'host': host,
+            'port': port,
+            'ssl': ssl,
+            'flags': flags,
+            'sock': sock,
+            'local_addr': local_addr,
+            'server_hostname': server_hostname,
+        }
+        self._negotiation = asyncio.Event()
+        self._communicate_task = None
+
+    def Channel(self, *args, **kwargs):
+        return AsyncioChannel(self._reader, self._writer, *args, **kwargs)
+
+    async def _handle_connection_tune(self, method):
+        await super()._handle_connection_tune(method)
+        self._negotiation.set()
+
+    async def open(self):
+        """Open the connection."""
+        self._reader, self._writer = await asyncio.open_connection(
+            **self._connect_args
         )
+        self.initiate_connection()
+        self._writer.write(self.data_to_send())
 
-    async def _handle_flow_ok(self, method):
-        self._chan.flow = method.active
-        await asyncio.sleep(0)  # Trigger the switch
+        loop = asyncio.get_event_loop()
+        self._communicate_task = loop.create_task(self._communicate())
 
-    async def _handle_basic_consume_ok(self, method):
-        self._chan.add_consumer(method.consumer_tag)
-        await asyncio.sleep(0)  # Trigger the switch
+        await self._negotiation.wait()
+        await self._connection_open()
 
-    async def _handle_basic_return(self, method):
-        await self._received_content.put(method.content)
+    async def close(self, reply_code=200, reply_text='OK',
+                    class_id=0, method_id=0):
+        """Close the connection and all its channels."""
+        if self.closed:
+            return
+        for channel in self.channels.values():
+            if channel.channel_id == 0:
+                continue  # Do not try close itself.
+            await channel.close(
+                reply_code, reply_text, class_id, method_id,
+            )
+        await self._connection_close(
+            reply_code, reply_text, class_id, method_id
+        )
+        self._writer.close()
+        # await self._writer.drain()
 
-    async def _handle_basic_deliver(self, method):
-        await self._received_content.put(method.content)
+        await self._communicate_task
 
-    async def _handle_basic_ack_nack(self, method):
-        await self._confirmations.put(method.content)
-
-    async def _handle_tx_select_ok(self, method):
-        self._chan.transaction_active = True
-        await asyncio.sleep(0)  # Trigger the switch
-
-    async def _handle_tx_commit_ok(self, method):
-        self._chan.transaction_active = False
-        await asyncio.sleep(0)  # Trigger the switch
-
-    async def _handle_tx_rollback_ok(self, method):
-        self._chan.transaction_active = False
-        await asyncio.sleep(0)  # Trigger the switch
-
-    async def _handle_confirm_select_ok(self, method):
-        self._chan.publisher_confirms_active = True
-        await asyncio.sleep(0)  # Trigger the switch
-
-
-class Connection:
-
-    def __init__(self, reader, writer, **kwargs):
-        self._reader = reader
-        self._writer = writer
-        self._conn = 'conn'
+    async def _communicate(self):
+        while not self.closed or not self._writer.transport.is_closing():
+            frame_max = self.negotiated_settings.frame_max
+            data = await self._reader.read(frame_max)
+            if not data:
+                break  # XXX how to handle this properly?
+            for method in self.parse_data(data):
+                channel = self.channels[method.channel_id]
+                await channel._receive_method(method)
 
 
 # Copy-pasted from https://github.com/python/asyncio/pull/465
@@ -134,24 +161,33 @@ def _cleanup(main_task, loop):
 
 def run(main, *, debug=False):
     """Run a coroutine.
+
     This function runs the passed coroutine, taking care of
     managing the asyncio event loop and finalizing asynchronous
     generators.
+
     This function cannot be called when another asyncio event loop
     is running.
+
     If debug is True, the event loop will be run in debug mode.
+
     This function handles KeyboardInterrupt exception in a way that
     the passed coroutine gets cancelled and KeyboardInterrupt
     is ignored. Therefore, to clean up an asyncio.CancelledError
     exception should be caught within the passed coroutine.
+
     This function should be used as a main entry point for
     asyncio programs, and should not be used to call asynchronous
     APIs.
+
     Example:
+
         from amqproto.io.asyncio import run
+
         async def main():
             await asyncio.sleep(1)
             print('hello')
+
         run(main())
     """
     if asyncio._get_running_loop() is not None:

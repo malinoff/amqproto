@@ -4,7 +4,12 @@ amqproto.frames
 
 AMQP frames.
 """
+
 # pylint: disable=invalid-name
+
+import inspect
+
+import attr
 import construct as c
 
 from . import methods
@@ -18,13 +23,27 @@ FRAME_BODY = 3
 FRAME_HEARTBEAT = 8
 FRAME_END = 206
 
-Method = 'Method' / c.Struct(
-    'class_id' / c.Short,
-    'method_id' / c.Short,
-    'method' / c.Switch(lambda ctx: (ctx.class_id, ctx.method_id), cases={
-        ids: method.struct
-        for ids, method in methods.Method.BY_ID.items()
-    })
+
+def _decode_method(obj, ctx):
+    cls = methods.Method.BY_ID[(obj.class_id, obj.method_id)]
+    sig = inspect.signature(cls)
+    return cls(**{key: value for key, value in obj.items()
+                  if key in sig.parameters})
+
+
+Method = 'Method' / c.ExprAdapter(
+    subcon=c.Struct(
+        'class_id' / c.Short,
+        'method_id' / c.Short,
+        'method' / c.Embedded(
+            c.Switch(lambda ctx: (ctx.class_id, ctx.method_id), cases={
+                ids: method.struct
+                for ids, method in methods.Method.BY_ID.items()
+            })
+        )
+    ),
+    encoder=lambda obj, ctx: attr.asdict(obj),
+    decoder=_decode_method,
 )
 
 ContentHeader = 'ContentHeader' / c.Struct(
@@ -63,7 +82,7 @@ Frame = 'Frame' / c.Struct(
     ),
     'channel_id' / d.UnsignedShort,
     'payload' / c.Prefixed(
-        d.Long,  # payload_size
+        d.UnsignedLong,  # payload_size
         c.Switch(c.this.frame_type, cases={
             'method': Method,
             'content_header': ContentHeader,

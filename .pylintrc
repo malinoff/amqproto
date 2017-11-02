@@ -1,12 +1,12 @@
 [BASIC]
 good-names = logger
 
-[MESSAGES CONTROL]
-disable=
-    too-many-public-methods,
-    too-many-arguments,
-    missing-docstring,
-    invalid-name,
-    too-many-instance-attributes,
-    no-self-use,
-    unused-argument,
+[VARIABLES]
+init-import=no
+
+[DESIGN]
+max-args = 10
+max-attributes = 10
+# We have lots of attrs-based (data) classes.
+min-public-methods = 0
+max-public-methods = 26

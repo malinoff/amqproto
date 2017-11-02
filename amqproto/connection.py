@@ -5,9 +5,8 @@ amqproto.connection
 Sans-I/O implementations of AMQP connections.
 """
 
-# pylint doesn't know how to deal with attrs-based classes
-# pylint: disable=attribute-defined-outside-init
-# pylint: disable=no-member,assigning-non-slot
+# Pylint can't handle attrs magic.
+# pylint: disable=attribute-defined-outside-init,no-member,assigning-non-slot
 
 import io
 import typing
@@ -17,15 +16,14 @@ import construct as c
 
 from . import sasl
 from . import replies
-from .utils import chunker
-from .methods import Method
-from .content import Content
+from . import methods
 from .settings import Settings
+from .channel import BaseChannel, Channel
 from .frames import Frame, ProtocolHeader
 
 
 @attr.s()
-class Connection:
+class Connection(BaseChannel):
     """Sans-I/O implementation of AMQP connection. Maintains per-connection
     state and creates channels.
 
@@ -33,88 +31,62 @@ class Connection:
     """
 
     virtual_host: str = attr.ib(default='/')
+
     auth: sasl.SASL = attr.ib(
         default=attr.Factory(lambda: sasl.PLAIN('guest', 'guest')),
     )
+
+    properties: dict = attr.ib(default=None, repr=False, cmp=False, hash=False)
+    locale: str = attr.ib(default='en_US', repr=False, cmp=False, hash=False)
+    channel_max: int = attr.ib(default=0, repr=False, cmp=False, hash=False)
+    frame_max: int = attr.ib(default=0, repr=False, cmp=False, hash=False)
+    heartbeat: int = attr.ib(default=60, repr=False, cmp=False, hash=False)
+
     client_settings: Settings = attr.ib(
         default=attr.Factory(
             takes_self=True,
-            factory=lambda self: Settings(mechanisms=self.auth.mechanism),
-        )
-    )
-    server_settings: Settings = attr.ib(
-        default=attr.Factory(lambda: Settings(type='server')),
-        init=False,
-    )
-    negotiated_settings: Settings = attr.ib(
-        default=attr.Factory(lambda: Settings(type='negotiated')),
+            factory=lambda self: Settings(
+                properties=self.properties,
+                mechanisms=self.auth.mechanism,
+                locales=self.locale,
+                channel_max=self.channel_max,
+                frame_max=self.frame_max,
+                heartbeat=self.heartbeat,
+            ),
+        ),
+        init=False
     )
 
-    protocol_version = attr.ib(default=(0, 9, 1), init=False)
+    Channel = Channel
 
     def __attrs_post_init__(self):
-        self.channels = {}
-        self.channels[0] = self
+        super().__attrs_post_init__()
+        # Handle the simplest case of auth=(username, password).
+        if isinstance(self.auth, (list, tuple)):
+            # pylint: disable=not-an-iterable
+            self.auth = sasl.PLAIN(*self.auth)
+        self.channels = {0: self}
         self._next_channel_id = 1
 
         # The buffer to accumulate received bytes.
         self._inbound_buffer = io.BytesIO()
-        # The buffer to accumulate all bytes required to be sent.
-        self._outbound_buffer = io.BytesIO()
 
-    def data_to_send(self) -> bytes:
-        """Return some data to send. It's intended to pass the data
-        directly to a some sort of I/O write method.
-        """
-        data = self._outbound_buffer.getvalue()
-        if data:
-            # Avoid unnecessary reallocations if there is nothing to send
-            self._outbound_buffer = io.BytesIO()
-        return data
+        self._method_handlers = {
+            methods.ConnectionStart: self._handle_connection_start,
+            methods.ConnectionSecure: self._handle_connection_secure,
+            methods.ConnectionTune: self._handle_connection_tune,
+            methods.ConnectionOpenOK: self._handle_connection_open_ok,
+            methods.ConnectionCloseOK: self._handle_connection_close_ok,
+            methods.ConnectionClose: self._handle_connection_close,
+        }
 
-    def method_to_send(self, channel_id: int, method: Method):
-        """Prepare the method for sending (including the content,
-        if there is one).
-
-        Note that it's the caller responsibility to check if flow
-        is active on the channel, and to delay the I/O if it's
-        not active.
-        """
-        Frame.build_stream({
-            'frame_type': 'method',
-            'channel_id': channel_id,
-            'payload': attr.asdict(method),
-        }, self._outbound_buffer)
-        if method.content is None:
-            return
-        Frame.build_stream({
-            'frame_type': 'content_header',
-            'channel_id': channel_id,
-            'payload': {
-                'class_id': method.content.class_id,
-                'body_size': method.content.body_size,
-                'properties': attr.asdict(method.content.properties),
-            }
-        }, self._outbound_buffer)
-        # 8 is the frame metadata size:
-        # frame_type is UnsignedByte (1),
-        # channel_id is UnsignedShort (1 + 2)
-        # payload length is UnsignedLong (3 + 4)
-        # frame_end is UnsignedByte (7 + 1)
-        max_frame_size = self.negotiated_settings.frame_max - 8
-        for chunk in chunker(method.content.body, max_frame_size):
-            Frame.build_stream({
-                'frame_type': 'content_body',
-                'channel_id': channel_id,
-                'payload': chunk,
-            }, self._outbound_buffer)
-
-    def parse_data(self, data: bytes) -> typing.List[Method]:
+    def parse_data(self, data: bytes) -> typing.List[methods.Method]:
         """Parse some bytes (that may be received by an I/O transmission)
         into list of AMQP frames. This method also handles buffering,
         so it's intended to directly pass bytes received from elsewhere.
         """
         self._inbound_buffer.write(data)
+        self._inbound_buffer.seek(0, 0)  # Seek to the beginning
         frames = c.Select(
             ProtocolHeader[1],
             Frame[:],
@@ -134,63 +106,27 @@ class Connection:
                 )
             )
         self._inbound_buffer = io.BytesIO(self._inbound_buffer.read())
-        methods = []
+        received_methods = []
         for frame in frames:
-            extra = []
+            # pylint: disable=protected-access
+            channel = self.channels[frame.channel_id]
             if frame.frame_type == 'method':
-                extra = self.method_received(frame)
+                received_methods.extend(
+                    channel._handle_method(frame.payload)
+                )
             elif frame.frame_type == 'content_header':
-                extra = self.content_header_received(frame)
+                received_methods.extend(
+                    channel._handle_content_header(frame.payload)
+                )
             elif frame.frame_type == 'content_body':
-                extra = self.content_body_received(frame)
+                received_methods.extend(
+                    channel._handle_content_body(frame.payload)
+                )
             elif frame.frame_type == 'heartbeat':
                 pass
-            methods.extend(extra)
-        return methods
+        return received_methods
 
-    def method_received(self, frame):
-        """Handle the received method."""
-        channel_id = frame.channel_id
-        method = frame.payload
-        method.channel_id = channel_id
-        if channel_id == 0:
-            return [method]
-        channel = self.channels[channel_id]
-        return channel.method_received(method)
-
-    def content_header_received(self, frame):
-        """Handle the received content header."""
-        channel_id = frame.channel_id
-        payload = frame.payload
-        assert channel_id != 0
-        channel = self.channels[channel_id]
-        return channel.content_header_received(payload)
-
-    def content_body_received(self, frame):
-        """Handle the received content body."""
-        channel_id = frame.channel_id
-        payload = frame.payload
-        assert channel_id != 0
-        channel = self.channels[channel_id]
-        return channel.content_body_received(payload)
-
-    def heartbeat_received(self, frame):  # pylint: disable=no-self-use
-        """Handle the received heartbeat."""
-        assert frame.channel_id == 0
-
-    def capable_of(self, method: Method, capability: str):
-        """Check if the server is capable of the method.
-        Can be used to prevent client implementations from sending
-        unsupported methods.
-        """
-        capabilities = self.settings.server['properties']['capabilities']
-        if not capabilities.get(capability, False):
-            raise replies.NotImplemented(
-                'the server does not support {}'.format(capability),
-                method.class_id, method.method_id,
-            )
-
-    def get_channel(self, channel_id: int = None) -> 'Channel':
+    def get_channel(self, channel_id: int = None) -> Channel:
         """Get a channel by channel_id, or create one."""
         if channel_id is None:
             channel_id = self._next_channel_id
@@ -199,43 +135,56 @@ class Connection:
             channel = self.channels.get(channel_id)
             if channel is not None:
                 return channel
-        channel = self.channels[channel_id] = Channel(channel_id)
+        channel = self.channels[channel_id] = self.Channel(channel_id)
+        channel.server_settings = self.server_settings
+        channel.negotiated_settings = self.negotiated_settings
         return channel
 
     def initiate_connection(self):
         """Initiate connection with the server."""
         # pylint: disable=unsubscriptable-object
         ProtocolHeader.build_stream({
-            'protocol_major': self.protocol_version[0],
-            'protocol_minor': self.protocol_version[1],
-            'protocol_revision': self.protocol_version[2],
+            'payload': {
+                'protocol_major': self.protocol_version[0],
+                'protocol_minor': self.protocol_version[1],
+                'protocol_revision': self.protocol_version[2],
+            }
         }, self._outbound_buffer)
 
-    def handshake(self, server_properties, mechanisms, locales):
-        """Negotiate preferred SASL mechanism and locale."""
-        client = self.client_settings
-        server = self.server_settings
-        server.properties = server_properties
-        server.mechanisms = mechanisms
-        server.locales = locales
+    def _handle_connection_start(self, method):
+        self.server_settings.properties = method.server_properties
+        self.server_settings.mechanisms = method.mechanisms
+        self.server_settings.locales = method.locales
 
-        if client.mechanisms not in server.mechanisms:
+        if self.client_settings.mechanisms not in method.mechanisms:
             raise replies.ConnectionAborted(
                 'unable to agree on auth mechanism'
             )
-        if client.locales not in server.locales:
+        if self.client_settings.locales not in method.locales:
             raise replies.ConnectionAborted(
                 'unable to agree on locale'
             )
 
-        self.negotiated_settings.mechanisms = client.mechanisms
-        self.negotiated_settings.locales = client.locales
+        self.negotiated_settings.mechanisms = self.client_settings.mechanisms
+        self.negotiated_settings.locales = self.client_settings.locales
 
-    def tune(self, channel_max, frame_max, heartbeat):
-        """Negotiate preferred channel_max, frame_max and heartbeat values."""
-        self.server_settings.channel_max = channel_max
-        self.server_settings.frame_max = frame_max
-        self.server_settings.heartbeat = heartbeat
+        method = methods.ConnectionStartOK(
+            self.client_settings.properties,
+            self.negotiated_settings.mechanisms,
+            self.auth.to_bytes(),
+            self.negotiated_settings.locales,
+        )
+        return self._prepare_for_sending(method)
+
+    def _handle_connection_secure(self, method):
+        response = self.auth.handle_challenge(method.challenge)
+        method = methods.ConnectionSecureOK(response)
+        return self._prepare_for_sending(method)
+
+    def _handle_connection_tune(self, method):
+        self.server_settings.channel_max = method.channel_max
+        self.server_settings.frame_max = method.frame_max
+        self.server_settings.heartbeat = method.heartbeat
 
         for name in ('channel_max', 'frame_max', 'heartbeat'):
             client_value = getattr(self.client_settings, name)
@@ -244,94 +193,32 @@ class Connection:
             negotiated_value = negotiate(client_value, server_value)
             setattr(self.negotiated_settings, name, negotiated_value)
 
+        method = methods.ConnectionTuneOK(
+            self.negotiated_settings.channel_max,
+            self.negotiated_settings.frame_max,
+            self.negotiated_settings.heartbeat,
+        )
+        return self._prepare_for_sending(method)
 
-@attr.s()
-class Channel:
-    """Sans-I/O implementation of AMQP channels.
-    Maintains per-channel state.
+    def _connection_open(self):
+        method = methods.ConnectionOpen(self.virtual_host)
+        return self._prepare_for_sending(method)
 
-    :param channel_id: channel id, unique within a single connection.
-    """
+    def _handle_connection_open_ok(self, method):
+        # pylint: disable=unused-argument
+        self.closed = False
 
-    channel_id: int = attr.ib()
-    flow: bool = attr.ib(default=True, init=False)
-    transaction_active: bool = attr.ib(default=False, init=False)
-    publisher_confirms_active: bool = attr.ib(default=False, init=False)
+    def _connection_close(self, reply_code, reply_text, class_id, method_id):
+        method = methods.ConnectionClose(
+            reply_code, reply_text, class_id, method_id,
+        )
+        return self._prepare_for_sending(method)
 
-    def __attrs_post_init__(self):
-        # Reference to the last received method waiting for its content.
-        self._content_waiter = None
-        # Set of all active consumer tags.
-        self._consumers = set()
-        # Mapping (delivery tag -> content) of unconfirmed content.
-        self._unconfirmed_content = {}
-        self._next_delivery_tag = 1
+    def _handle_connection_close_ok(self, method):
+        # pylint: disable=unused-argument
+        self.closed = True
 
-    def add_consumer(self, consumer_tag: str):
-        """Add the consumer tag to the list of active consumers."""
-        self._consumers.add(consumer_tag)
-
-    def remove_consumer(self, consumer_tag: str):
-        """Remove the consumer tag from the list of active consumers."""
-        self._consumers.remove(consumer_tag)
-
-    def publish_needs_confirmation(self, content):
-        """Point that a publish needs confirmations."""
-        if self.publisher_confirms_active:
-            self._unconfirmed_content[self._next_delivery_tag] = content
-            self._next_delivery_tag += 1
-
-    def unconfirmed_content(self):
-        """Returns a list of unconfirmed contents."""
-        content = list(self._unconfirmed_content.values())
-        self._unconfirmed_content = {}
-        return content
-
-    def confirm_publication(self, delivery_tag: int, multiple: bool = False):
-        """Confirm a publication using its delivery tag.
-        If ``multiple`` is ``True``, then ``delivery_tag`` is
-        treated as "up to".
-        """
-        if multiple:
-            self._unconfirmed_content = {
-                tag: content
-                for tag, content in self._unconfirmed_content.items()
-                if delivery_tag not in range(1, delivery_tag + 1)
-            }
-        else:
-            self._unconfirmed_content.pop(delivery_tag)
-
-    def method_received(self, method):
-        """Handle the received method."""
-        # We assume that the server won't send us methods we don't explicitly
-        # declare as supported via client properties, so there's no
-        # explicit check here.
-        to_return = []
-        if self._content_waiter is not None:
-            # The server decided to stop sending the content
-            waiter, self._content_waiter = self._content_waiter, None
-            to_return.append(waiter)
-        if not method.followed_by_content():
-            to_return.append(method)
-        else:
-            self._content_waiter = method
-        return to_return
-
-    def content_header_received(self, payload):
-        """Handle the received content header."""
-        content = Content(**payload, delivery_info=self._content_waiter)
-        self._content_waiter.content = content
-        if content.complete():
-            # An empty body
-            waiter, self._content_waiter = self._content_waiter, None
-            return [waiter]
-        return []
-
-    def content_body_received(self, payload):
-        """Handle the received content body."""
-        waiter = self._content_waiter
-        waiter.content.body += payload
-        if waiter.content.complete():
-            waiter, self._content_waiter = self._content_waiter, None
-            return [waiter]
-        return []
+    def _handle_connection_close(self, method):
+        method = methods.ConnectionCloseOK()
+        self.closed = True
+        return self._prepare_for_sending(method)

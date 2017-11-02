@@ -4,13 +4,78 @@ amqproto.content
 
 AMQP content.
 """
+
 # flake8: noqa=E701
 # pylint: disable=too-few-public-methods
+
+import inspect
+from itertools import zip_longest
+
 import attr
 import construct as c
 
 from . import domains as d
-from .utils import make_struct, grouper
+
+
+def grouper(iterable, n, fillvalue=None):  # pylint: disable=invalid-name
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3, 'x') -->
+    #   [('A', 'B', 'C'), ('D', 'E', 'F'), ('G', 'x', 'x')]
+    args = [iter(iterable)] * n
+    return zip_longest(*args, fillvalue=fillvalue)
+
+
+def make_struct(cls, exclude_attrs=(), struct=c.Struct):
+    """Helper function to make C-like structs from attrs-powered classes.
+    Attributes become fields, annotations define C types.
+    """
+    # The whole thing is highly dependent on the internals of attrs :(
+    # pylint: disable=protected-access
+    struct_fields = []
+    # Bits are accumulated into octets.
+    bits = []
+    type_ = None
+    for name, attrib in _attribs_from(cls):
+        if name in exclude_attrs:
+            continue
+
+        attrib = getattr(cls, name)
+        type_ = cls.__annotations__[name]
+
+        if type_ is d.Bit:
+            bits.append(name / c.Flag)
+            continue
+        # In AMQP 0.9.1, all methods (that have bit fields) have sequential
+        # bit fields that should (and technically can) be accumulated
+        # into a single octet.
+        if type_ is not d.Bit and bits:
+            if len(bits) < 8:
+                bits += [c.Padding(8 - len(bits))]
+            bit_struct = c.Embedded(c.BitStruct(*bits))
+            struct_fields.append(bit_struct)
+        if attrib._default is None:
+            type_ = c.Default(type_, c.Pass)
+        elif attrib._default is not attr.NOTHING and not attrib.init:
+            type_ = c.Const(type_, attrib._default)
+
+        struct_fields.append(name / type_)
+
+    # Handle the case when a method ends with a bit field.
+    if type_ is d.Bit:
+        if len(bits) < 8:
+            bits += [c.Padding(8 - len(bits))]
+        bit_struct = c.Embedded(c.BitStruct(*bits))
+        struct_fields.append(bit_struct)
+
+    return cls.__name__ / struct(*struct_fields)
+
+
+def _attribs_from(cls):
+    # pylint: disable=protected-access
+    members = inspect.getmembers(
+        cls, lambda obj: isinstance(obj, attr._make._CountingAttr)
+    )
+    return sorted(members, key=lambda attr: attr[1].counter)
 
 
 class PropertiesStruct(c.Construct):
@@ -49,7 +114,7 @@ class PropertiesStruct(c.Construct):
         # Set the last bit to 0, as there's no more contiuation.
         if flags:
             flags[-1].value = 0
-        self.flags = c.Struct(*flags)
+        self.flags = c.BitStruct(*flags)
 
         def _is_bit(subcon):
             while True:
@@ -100,6 +165,27 @@ class Properties:
         cls.BY_ID[class_id] = cls
 
 
+@attr.s(slots=True)
+class Content:
+    """Describes an AMQP content."""
+
+    class_id: int = None
+
+    body: bytes = attr.ib()
+    body_size: int = attr.ib()
+    properties: Properties = attr.ib(default=attr.Factory(
+        takes_self=True,
+        factory=lambda self: Properties.BY_ID[self.class_id](),
+    ))
+    delivery_info = attr.ib(default=None)
+
+    def complete(self):
+        """AMQP allows to break content into multiple chunks for sending.
+        This method tells if the content is received completely.
+        """
+        return len(self.body) == self.body_size
+
+
 @attr.s()
 class BasicProperties(Properties, class_id=60):
     """Basic properties."""
@@ -121,17 +207,7 @@ class BasicProperties(Properties, class_id=60):
     cluster_id: d.ShortStr = attr.ib(default=None, init=False, repr=False)
 
 
-@attr.s(slots=True)
-class Content:
-    """Describes an AMQP content."""
-    class_id: int = attr.ib()
-    body_size: int = attr.ib()
-    properties: Properties = attr.ib()
-    delivery_info = attr.ib(default=None)
-    body: bytes = attr.ib(default=b'')
+class BasicContent(Content):
+    """Basic content."""
 
-    def complete(self):
-        """AMQP allows to break content into multiple chunks for sending.
-        This method tells if the content is received completely.
-        """
-        return len(self.body) == self.body_size
+    class_id = 60
