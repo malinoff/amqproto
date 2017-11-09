@@ -1,26 +1,71 @@
 import asyncio
 
-from .. import replies
-from ..connection import Connection as _Connection
-from ..channel import Channel as _Channel, BaseChannel as _BaseChannel
+from .. import methods
+from ..replies import AMQPError, InternalError
+from ..connection import Connection
+from ..channel import Channel, BaseChannel
 
 
-class AsyncioBaseChannel(_BaseChannel):
+class AsyncioBaseChannel(BaseChannel):
 
-    def __init__(self, reader, writer, *args, **kwargs):
+    def __init__(self, writer, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._reader = reader
         self._writer = writer
+        # The server can send us two things: a response to a method or
+        # a connection/channel exception.
         self._response = asyncio.Queue(maxsize=1)
+        self._exception = asyncio.Queue(maxsize=1)
 
-    def _prepare_for_sending(self, method):
+    async def _prepare_for_sending(self, method):
+        # Because of asynchronous nature of AMQP, error handling
+        # is difficult. First, we can't know in advance
+        # the exact moment in future when the broker decides to send
+        # us an exception. Second, we can send methods without waiting
+        # for replies from the broker - essentially moving handling
+        # the error from the first errored method call into the second
+        # method call!
+
+        if not self._exception.empty():
+            # This covers the case of two methods being sent without waiting
+            # for responses, e.g.:
+            # await channel.basic_publish()
+            # [here an exception is received]
+            # await channel.basic_publish()  [raises the exception]
+
+            # Raising the exception from the second call is at least
+            # confusing, but yet I don't know a better way to inform
+            # the user about the error. Maybe wrapping the exception into a
+            # some sort of DelayedError is worth exploring.
+            raise (await self._exception.get())
         super()._prepare_for_sending(method)
         self._writer.write(self.data_to_send())
-        if method.has_response():
-            # No need to drain, we can only receive a response after
-            # a successful request is actually sent.
-            return self._response.get()
-        return self._writer.drain()
+        if not method.has_response():
+            # If there's no response we cant wait for, we should only
+            # drain for I/O to complete. Possible error handling
+            # is deferred to the next await, as described above.
+            await self._writer.drain()
+            # When the IO is not paused, `drain` simply yields to the loop,
+            # making `await` above useless - it does not actually
+            # switch to the next task. Let's solve this problem.
+            await asyncio.sleep(0)
+            return
+        # If there is a response, then we can handle possible errors
+        # right here, yay!
+        done, pending = await asyncio.wait(
+            fs=(self._response.get(), self._exception.get()),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # There is a situation when both .get() calls may be done
+        # and that point: a race condition, in which both client and server
+        # close the channel, client - normally, server - via an exception.
+        # In that case, `pending` is empty.
+        if pending:
+            pending.pop().cancel()
+        for task in done:
+            response = await task
+            if isinstance(response, AMQPError):
+                raise response
+        return response
 
     async def _receive_method(self, method):
         # _method_handlers are defined in subclasses
@@ -29,13 +74,19 @@ class AsyncioBaseChannel(_BaseChannel):
             fut = handler(method)
             if fut is not None:
                 await fut
-        if not method.has_response():
+        if isinstance(method, (methods.BasicDeliver,
+                               methods.BasicReturn,
+                               methods.ChannelClose,
+                               methods.ConnectionClose)):
+            # These methods have their own special handling
+            return
+        if method.has_response():
             # If the received method has responses, it means the server
             # sent this method, not the client, thus the client doesn't
             # wait for the reply and we shouldn't put the method into
             # self._response
-            await self._response.put(method)
-        # TODO handle close
+            return
+        await self._response.put(method)
 
     async def __aenter__(self):
         await self.open()
@@ -43,8 +94,8 @@ class AsyncioBaseChannel(_BaseChannel):
 
     async def __aexit__(self, exc_type, exc, traceback):
         if exc is not None:
-            if not isinstance(exc, replies.AMQPError):
-                exc = replies.InternalError(repr(exc))
+            if not isinstance(exc, AMQPError):
+                exc = InternalError(reply_text=repr(exc))
             await self.close(
                 exc.reply_code, exc.reply_text, exc.class_id, exc.method_id,
             )
@@ -52,7 +103,15 @@ class AsyncioBaseChannel(_BaseChannel):
             await self.close()
 
 
-class AsyncioChannel(AsyncioBaseChannel, _Channel):
+class AsyncioChannel(AsyncioBaseChannel, Channel):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._delivered_messages = asyncio.Queue()
+        self._method_handlers.update({
+            methods.BasicReturn: self._handle_basic_return,
+            methods.BasicDeliver: self._handle_basic_deliver,
+        })
 
     async def open(self):
         """Open the channel."""
@@ -66,13 +125,31 @@ class AsyncioChannel(AsyncioBaseChannel, _Channel):
                 reply_code, reply_text, class_id, method_id
             )
 
+    async def _handle_basic_return(self, method):
+        await self._delivered_messages.put(method.content)
 
-class AsyncioConnection(AsyncioBaseChannel, _Connection):
+    async def _handle_basic_deliver(self, method):
+        await self._delivered_messages.put(method.content)
+
+    async def _handle_channel_close(self, method):
+        await super()._handle_channel_close(method)
+        exc = AMQPError.from_close_method(method)
+        await self._exception.put(exc)
+
+    async def delivered_messages(self):
+        """Yields delivered messages."""
+        while not self.closed:
+            message = await self._delivered_messages.get()
+            yield message
+
+
+class AsyncioConnection(AsyncioBaseChannel, Connection):
 
     def __init__(self, host='localhost', port=5672, *,
                  ssl=None, flags=0, sock=None, local_addr=None,
                  server_hostname=None, **kwargs):
-        super().__init__(reader=None, writer=None, **kwargs)
+        super().__init__(writer=None, **kwargs)
+        self._reader = None
         self._connect_args = {
             'host': host,
             'port': port,
@@ -86,7 +163,7 @@ class AsyncioConnection(AsyncioBaseChannel, _Connection):
         self._communicate_task = None
 
     def Channel(self, *args, **kwargs):
-        return AsyncioChannel(self._reader, self._writer, *args, **kwargs)
+        return AsyncioChannel(self._writer, *args, **kwargs)
 
     async def _handle_connection_tune(self, method):
         await super()._handle_connection_tune(method)
@@ -124,6 +201,11 @@ class AsyncioConnection(AsyncioBaseChannel, _Connection):
         # await self._writer.drain()
 
         await self._communicate_task
+
+    async def _handle_connection_close(self, method):
+        await super()._handle_conneciton_close(method)
+        exc = AMQPError.from_close_method(method)
+        await self._exception.put(exc)
 
     async def _communicate(self):
         while not self.closed or not self._writer.transport.is_closing():

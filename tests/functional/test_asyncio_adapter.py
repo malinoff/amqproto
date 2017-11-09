@@ -4,16 +4,24 @@ import pytest
 import requests
 
 from amqproto import AMQPError
+from amqproto.methods import BasicDeliver, BasicReturn
 from amqproto.adapters.asyncio_adapter import AsyncioConnection
 
 
-@pytest.fixture()
+@pytest.fixture(scope='session')
+def event_loop():
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest.fixture(scope='session')
 async def connection():
     async with AsyncioConnection() as conn:
         yield conn
 
 
-@pytest.fixture()
+@pytest.fixture(scope='session')
 async def channel(connection):
     async with connection.get_channel() as chan:
         yield chan
@@ -93,7 +101,6 @@ async def test_can_publish_and_get_messages(channel):
     message = b'hello world'
     await channel.basic_publish(message, exchange='', routing_key='hello')
     response = await channel.basic_get('hello')
-    print(response)
     assert response.content.body == b'hello world'
 
 
@@ -106,14 +113,15 @@ async def test_can_produce_and_consume_messages(channel):
     message = b'hello world'
     await channel.basic_publish(message, exchange='', routing_key='hello')
 
-    async for received_message in channel.consumed_messages():
-        assert received_message.body == b'hello world'
-        assert received_message.delivery_info.routing_key == b'hello'
+    async for message in channel.delivered_messages():
+        assert message.body == b'hello world'
+        assert isinstance(message.delivery_info, BasicDeliver)
+        assert message.delivery_info.routing_key == 'hello'
 
-        await channel.basic_ack(received_message.delivery_info.delivery_tag)
+        await channel.basic_ack(message.delivery_info.delivery_tag)
         break
 
-    assert channel._consumed_messages.empty()
+    assert channel._delivered_messages.empty()
 
     await channel.basic_cancel(consumer_tag)
 
@@ -130,11 +138,12 @@ async def test_mandatory_flag_handles_undelivered_messages(channel):
         routing_key='foobar',  # this queue doesnt exist
         mandatory=True,
     )
-    async for returned_message in channel.returned_messages():
-        assert returned_message.body == message.body
+    async for message in channel.delivered_messages():
+        assert message.body == message.body
+        assert isinstance(message.delivery_info, BasicReturn)
         break
 
-    assert channel._returned_messages.empty()
+    assert channel._delivered_messages.empty()
 
     await channel.exchange_delete(exchange_name)
 
@@ -150,10 +159,10 @@ async def test_mandatory_flag_on_existing_queue(channel):
     await channel.basic_publish(
         message, routing_key='amqproto_test_q', mandatory=True
     )
-    # Make sure there's no danglign messages in the queue
-    received_message = await channel.basic_get(queue_name)
-    assert received_message.body == message.body
-    assert channel._returned_messages.empty()
+    # Make sure there are no dangling messages in the queue
+    response = await channel.basic_get(queue_name)
+    assert response.content.body == message
+    assert channel._delivered_messages.empty()
 
     # cleanup
     await channel.queue_unbind(queue_name, exchange_name)
@@ -164,12 +173,6 @@ async def test_mandatory_flag_on_existing_queue(channel):
 async def test_channel_errors_are_handled_properly(channel):
     with pytest.raises(AMQPError):
         await channel.queue_unbind('amqproto_test_q', '')
-
-
-@pytest.mark.asyncio()
-async def test_can_publish_strings(channel):
-    message = 'this is a string, not bytes!'
-    await channel.basic_publish(message)
 
 
 @pytest.mark.asyncio()

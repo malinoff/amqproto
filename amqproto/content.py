@@ -8,74 +8,11 @@ AMQP content.
 # flake8: noqa=E701
 # pylint: disable=too-few-public-methods
 
-import inspect
-from itertools import zip_longest
-
 import attr
 import construct as c
 
 from . import domains as d
-
-
-def grouper(iterable, n, fillvalue=None):  # pylint: disable=invalid-name
-    "Collect data into fixed-length chunks or blocks"
-    # grouper('ABCDEFG', 3, 'x') -->
-    #   [('A', 'B', 'C'), ('D', 'E', 'F'), ('G', 'x', 'x')]
-    args = [iter(iterable)] * n
-    return zip_longest(*args, fillvalue=fillvalue)
-
-
-def make_struct(cls, exclude_attrs=(), struct=c.Struct):
-    """Helper function to make C-like structs from attrs-powered classes.
-    Attributes become fields, annotations define C types.
-    """
-    # The whole thing is highly dependent on the internals of attrs :(
-    # pylint: disable=protected-access
-    struct_fields = []
-    # Bits are accumulated into octets.
-    bits = []
-    type_ = None
-    for name, attrib in _attribs_from(cls):
-        if name in exclude_attrs:
-            continue
-
-        attrib = getattr(cls, name)
-        type_ = cls.__annotations__[name]
-
-        if type_ is d.Bit:
-            bits.append(name / c.Flag)
-            continue
-        # In AMQP 0.9.1, all methods (that have bit fields) have sequential
-        # bit fields that should (and technically can) be accumulated
-        # into a single octet.
-        if type_ is not d.Bit and bits:
-            if len(bits) < 8:
-                bits += [c.Padding(8 - len(bits))]
-            bit_struct = c.Embedded(c.BitStruct(*bits))
-            struct_fields.append(bit_struct)
-        if attrib._default is None:
-            type_ = c.Default(type_, c.Pass)
-        elif attrib._default is not attr.NOTHING and not attrib.init:
-            type_ = c.Const(type_, attrib._default)
-
-        struct_fields.append(name / type_)
-
-    # Handle the case when a method ends with a bit field.
-    if type_ is d.Bit:
-        if len(bits) < 8:
-            bits += [c.Padding(8 - len(bits))]
-        bit_struct = c.Embedded(c.BitStruct(*bits))
-        struct_fields.append(bit_struct)
-
-    return cls.__name__ / struct(*struct_fields)
-
-
-def _attribs_from(cls):
-    # pylint: disable=protected-access
-    members = inspect.getmembers(
-        cls, lambda obj: isinstance(obj, attr._make._CountingAttr)
-    )
-    return sorted(members, key=lambda attr: attr[1].counter)
+from .utils import make_struct, grouper
 
 
 class PropertiesStruct(c.Construct):
@@ -165,11 +102,9 @@ class Properties:
         cls.BY_ID[class_id] = cls
 
 
-@attr.s(slots=True)
+@attr.s()
 class Content:
     """Describes an AMQP content."""
-
-    class_id: int = None
 
     body: bytes = attr.ib()
     body_size: int = attr.ib()
@@ -177,13 +112,20 @@ class Content:
         takes_self=True,
         factory=lambda self: Properties.BY_ID[self.class_id](),
     ))
-    delivery_info = attr.ib(default=None)
+    delivery_info = attr.ib(default=None, repr=False, cmp=False, hash=False)
+
+    BY_ID = {}
 
     def complete(self):
         """AMQP allows to break content into multiple chunks for sending.
         This method tells if the content is received completely.
         """
         return len(self.body) == self.body_size
+
+    def __init_subclass__(cls, class_id, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.class_id = class_id
+        cls.BY_ID[class_id] = cls
 
 
 @attr.s()
@@ -207,7 +149,5 @@ class BasicProperties(Properties, class_id=60):
     cluster_id: d.ShortStr = attr.ib(default=None, init=False, repr=False)
 
 
-class BasicContent(Content):
+class BasicContent(Content, class_id=60):
     """Basic content."""
-
-    class_id = 60

@@ -18,15 +18,9 @@ import attr
 from . import methods
 from . import replies
 from .frames import Frame
+from .utils import chunker
 from .settings import Settings
-from .content import BasicContent
-
-
-def chunker(iterable, n):  # pylint: disable=invalid-name
-    """Group data into n-sized chunks or blocks."""
-    # chunker('ABCDEFG', 3) --> ['ABC', 'DEF', 'G']
-    for idx in range(0, len(iterable), n):
-        yield iterable[idx:idx+n]
+from .content import Content, BasicContent
 
 
 @attr.s()
@@ -95,8 +89,10 @@ class BaseChannel:
         return to_return
 
     def _handle_content_header(self, payload):
-        content = BasicContent(
-            body=b'', delivery_info=self._content_waiter, **payload
+        content_cls = Content.BY_ID[payload.class_id]
+        content = content_cls(
+            body=b'', delivery_info=self._content_waiter,
+            body_size=payload.body_size, properties=payload.properties,
         )
         self._content_waiter.content = content
         if content.complete():
@@ -107,7 +103,7 @@ class BaseChannel:
 
     def _handle_content_body(self, payload):
         waiter = self._content_waiter
-        waiter.content.body += payload
+        waiter.content.body += payload.content
         if waiter.content.complete():
             waiter, self._content_waiter = self._content_waiter, None
             return [waiter]
@@ -161,9 +157,6 @@ class Channel(BaseChannel):
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
-        # A list of delivered messages, either via
-        # BasicDeliver or BasicReturn.
-        self._delivered_messages = deque()
         # Set of all active consumer tags.
         self._consumers = set()
         # Mapping (delivery tag -> content) of unconfirmed messages.
@@ -181,8 +174,6 @@ class Channel(BaseChannel):
             methods.BasicConsumeOK: self._handle_basic_consume_ok,
             methods.BasicCancel: self._handle_basic_cancel,
             methods.BasicCancelOK: self._handle_basic_cancel_ok,
-            methods.BasicReturn: self._handle_basic_return,
-            methods.BasicDeliver: self._handle_basic_deliver,
             methods.BasicAck: self._handle_basic_ack,
             methods.BasicNack: self._handle_basic_nack,
             methods.TxSelectOK: self._handle_tx_select_ok,
@@ -649,8 +640,6 @@ class Channel(BaseChannel):
             be consumed.
         """
         # Handle the simplest case of content being a (byte)string.
-        if isinstance(content, str):
-            content = content.encode('utf-8')
         if isinstance(content, bytes):
             content = BasicContent(body=content, body_size=len(content))
         method = methods.BasicPublish(
@@ -660,12 +649,6 @@ class Channel(BaseChannel):
             self._unconfirmed_messages[self._next_delivery_tag] = content
             self._next_delivery_tag += 1
         return self._prepare_for_sending(method)
-
-    def _handle_basic_return(self, method):
-        self._delivered_messages.append(method.content)
-
-    def _handle_basic_deliver(self, method):
-        self._delivered_messages.append(method.content)
 
     def basic_get(self, queue, no_ack=False):
         """This method provides a direct access to the messages in a queue

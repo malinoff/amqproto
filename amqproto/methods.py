@@ -27,7 +27,7 @@ class Method:
 
         cls.followed_by_content = followed_by_content
         if followed_by_content:
-            cls.content = attr.ib()
+            cls.content = attr.ib(default=None)
 
         cls.struct = make_struct(cls, exclude_attrs={'content'})
 
@@ -389,7 +389,7 @@ class BasicGet(Method, class_id=60, method_id=70):
     # Deprecated
     ticket: d.Short = attr.ib(default=0, init=False, repr=False)
     queue: d.QueueName = attr.ib()
-    no_ack: d.NoAck = attr.ib(default=False)
+    no_ack: d.NoAck = attr.ib()
 
 
 @attr.s()
@@ -411,7 +411,7 @@ class BasicGetEmpty(Method, class_id=60, method_id=72, response_to=BasicGet):
 @attr.s()
 class BasicAck(Method, class_id=60, method_id=80):
     delivery_tag: d.DeliveryTag = attr.ib()
-    multiple: d.Bit = attr.ib(default=False)
+    multiple: d.Bit = attr.ib()
 
 
 @attr.s()
