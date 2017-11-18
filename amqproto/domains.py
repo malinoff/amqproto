@@ -6,7 +6,6 @@ AMQP domains (types).
 """
 # pylint: disable=missing-docstring
 # pylint: disable=invalid-name
-import re
 import decimal
 import functools
 from datetime import datetime
@@ -202,17 +201,9 @@ DOMAIN_TO_LABEL[Table] = b'F'
 DOMAIN_TO_LABEL[Array] = b'A'
 
 
-def _regex_check(regex, value):
-    if re.match(regex, value) is None:
-        raise ValueError('{!r} does not match the following regex: {}'.format(
-            value, regex
-        ))
-    return True
-
-
-def _emptiness_check(value):
+def _emptiness_check(name, value):
     if not value:
-        raise ValueError('cannot be empty')
+        raise ValueError(f'{name} cannot be empty')
     return True
 
 
@@ -246,10 +237,9 @@ Rules:
     reserved for client use, meaning "all messages so far received".
 """
 
-ExchangeName = c.ExprValidator(
-    Shortstr,
-    validator=lambda obj, ctx: _regex_check(r'^[a-zA-Z0-9-_.:]*$', obj)
-)
+# Although ExchangeName and QueueName should be only alpha-numeric ASCII
+# by AMQP 0.9.1 spec, rabbitmq apparently works with pretty much everything.
+ExchangeName = Shortstr
 """Exchange name.
 
 The exchange name is a client-selected string that identifies the exchange
@@ -291,7 +281,7 @@ will raise a channel or connection exception.
 """
 
 Path = c.ExprValidator(
-    Shortstr, lambda obj, ctx: _emptiness_check(obj)
+    Shortstr, lambda obj, ctx: _emptiness_check('path', obj)
 )
 """Path.
 
@@ -306,9 +296,7 @@ This table provides a set of peer properties, used for identification,
 debugging, and general information.
 """
 
-QueueName = c.ExprValidator(
-    Shortstr, lambda obj, ctx: _regex_check(r'^[a-zA-Z0-9-_.:]*$', obj)
-)
+QueueName = Shortstr
 """Queue name.
 
 The queue name identifies the queue within the vhost.  In methods where the
@@ -350,7 +338,7 @@ waiting acknowledgement.
 """
 
 ReplyCode = c.ExprValidator(
-    Short, lambda obj, ctx: _emptiness_check(obj)
+    Short, lambda obj, ctx: _emptiness_check('reply code', obj)
 )
 """Reply code from server.
 
@@ -359,7 +347,7 @@ of this formal specification.
 """
 
 ReplyText = c.ExprValidator(
-    Shortstr, lambda obj, ctx: _emptiness_check(obj)
+    Shortstr, lambda obj, ctx: _emptiness_check('reply text', obj)
 )
 """Localised reply text.
 

@@ -24,7 +24,7 @@ FRAME_HEARTBEAT = 8
 FRAME_END = 206
 
 
-def _decode_method(obj, ctx):
+def _decode_method(obj, _):
     cls = methods.Method.BY_ID[(obj.class_id, obj.method_id)]
     sig = inspect.signature(cls)
     return cls(**{key: value for key, value in obj.items()
@@ -46,19 +46,27 @@ Method = 'Method' / c.ExprAdapter(
     decoder=_decode_method,
 )
 
-ContentHeader = 'ContentHeader' / c.Struct(
-    'class_id' / d.Short,
-    'weight' / c.Const(d.Short, value=0),
-    'body_size' / d.Longlong,
-    'properties' / c.Switch(c.this.class_id, cases={
-        class_id: properties.struct
-        for class_id, properties in content.Properties.BY_ID.items()
-    }),
+ContentHeader = 'ContentHeader' / c.ExprAdapter(
+    subcon=c.Struct(
+        'class_id' / d.Short,
+        'weight' / c.Const(d.Short, value=0),
+        'body_size' / d.Longlong,
+        'properties' / c.Switch(c.this.class_id, cases={
+            class_id: properties.struct
+            for class_id, properties in content.Properties.BY_ID.items()
+        })
+    ),
+    encoder=lambda obj, ctx: {
+        'class_id': obj.class_id,
+        'body_size': obj.body_size,
+        'properties': attr.asdict(obj.properties),
+    },
+    decoder=lambda obj, ctx: content.Content.BY_ID[obj.class_id](
+        body=b'', body_size=obj.body_size, properties=obj.properties,
+    ),
 )
 
-ContentBody = 'ContentBody' / c.Struct(
-    'content' / c.GreedyBytes,
-)
+ContentBody = 'ContentBody' / c.GreedyBytes
 
 Heartbeat = 'Heartbeat' / c.Pass
 

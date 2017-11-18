@@ -1,9 +1,10 @@
+import logging
 import asyncio
 
 from .. import methods
-from ..replies import AMQPError, InternalError
 from ..connection import Connection
 from ..channel import Channel, BaseChannel
+from ..replies import Reply, AsynchronousReply, InternalError
 
 
 class AsyncioBaseChannel(BaseChannel):
@@ -24,19 +25,21 @@ class AsyncioBaseChannel(BaseChannel):
         # for replies from the broker - essentially moving handling
         # the error from the first errored method call into the second
         # method call!
-
-        if not self._exception.empty():
+        if self.state in {'closed', 'closing'} and not method.closing:
             # This covers the case of two methods being sent without waiting
             # for responses, e.g.:
-            # await channel.basic_publish()
+            # await channel.method(no_wait=True)
             # [here an exception is received]
-            # await channel.basic_publish()  [raises the exception]
+            # await channel.method(no_wait=True)  [raises the exception]
 
             # Raising the exception from the second call is at least
             # confusing, but yet I don't know a better way to inform
             # the user about the error. Maybe wrapping the exception into a
             # some sort of DelayedError is worth exploring.
-            raise (await self._exception.get())
+            exc = await self._exception.get()
+            exc.asynchronous = True
+            raise exc
+        logging.info('[channel_id %s] sending %s', self.channel_id, method)
         super()._prepare_for_sending(method)
         self._writer.write(self.data_to_send())
         if not method.has_response():
@@ -44,10 +47,6 @@ class AsyncioBaseChannel(BaseChannel):
             # drain for I/O to complete. Possible error handling
             # is deferred to the next await, as described above.
             await self._writer.drain()
-            # When the IO is not paused, `drain` simply yields to the loop,
-            # making `await` above useless - it does not actually
-            # switch to the next task. Let's solve this problem.
-            await asyncio.sleep(0)
             return
         # If there is a response, then we can handle possible errors
         # right here, yay!
@@ -57,17 +56,18 @@ class AsyncioBaseChannel(BaseChannel):
         )
         # There is a situation when both .get() calls may be done
         # and that point: a race condition, in which both client and server
-        # close the channel, client - normally, server - via an exception.
+        # close the channel: client - normally, server - via an exception.
         # In that case, `pending` is empty.
-        if pending:
-            pending.pop().cancel()
+        for task in pending:
+            task.cancel()
         for task in done:
             response = await task
-            if isinstance(response, AMQPError):
-                raise response
+            if isinstance(response, Reply):
+                raise AsynchronousReply(response)
         return response
 
     async def _receive_method(self, method):
+        logging.info('[channel_id %s] receiving %s', self.channel_id, method)
         # _method_handlers are defined in subclasses
         handler = self._method_handlers.get(method.__class__)
         if handler is not None:
@@ -94,7 +94,7 @@ class AsyncioBaseChannel(BaseChannel):
 
     async def __aexit__(self, exc_type, exc, traceback):
         if exc is not None:
-            if not isinstance(exc, AMQPError):
+            if not isinstance(exc, Reply):
                 exc = InternalError(reply_text=repr(exc))
             await self.close(
                 exc.reply_code, exc.reply_text, exc.class_id, exc.method_id,
@@ -120,10 +120,11 @@ class AsyncioChannel(AsyncioBaseChannel, Channel):
     async def close(self, reply_code=200, reply_text='OK',
                     class_id=0, method_id=0):
         """Close the channel."""
-        if not self.closed:
-            await self._channel_close(
-                reply_code, reply_text, class_id, method_id
-            )
+        if self.state != 'open':
+            return
+        await self._channel_close(
+            reply_code, reply_text, class_id, method_id
+        )
 
     async def _handle_basic_return(self, method):
         await self._delivered_messages.put(method.content)
@@ -133,12 +134,13 @@ class AsyncioChannel(AsyncioBaseChannel, Channel):
 
     async def _handle_channel_close(self, method):
         await super()._handle_channel_close(method)
-        exc = AMQPError.from_close_method(method)
+        exc = Reply.from_close_method(method)
         await self._exception.put(exc)
+        self.state = 'closed'
 
     async def delivered_messages(self):
         """Yields delivered messages."""
-        while not self.closed:
+        while self.state == 'open':
             message = await self._delivered_messages.get()
             yield message
 
@@ -160,14 +162,32 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
             'server_hostname': server_hostname,
         }
         self._negotiation = asyncio.Event()
+        self._heartbeat_task = None
         self._communicate_task = None
 
     def Channel(self, *args, **kwargs):
         return AsyncioChannel(self._writer, *args, **kwargs)
 
     async def _handle_connection_tune(self, method):
+        loop = asyncio.get_event_loop()
+        self._heartbeat_task = loop.create_task(self._start_heartbeat())
+
         await super()._handle_connection_tune(method)
         self._negotiation.set()
+
+    async def _send_heartbeat(self):
+        super()._send_heartbeat()
+        self._writer.write(self.data_to_send())
+        await self._writer.drain()
+
+    async def _start_heartbeat(self):
+        if self.negotiated_settings.heartbeat == 0:
+            return
+        transport_closing = self._writer.transport.is_closing
+        while self.state in {'opening', 'open'} and not transport_closing():
+            await self._send_heartbeat()
+            self._missed_heartbeats += 1
+            await asyncio.sleep(self.negotiated_settings.heartbeat)
 
     async def open(self):
         """Open the connection."""
@@ -186,7 +206,7 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
     async def close(self, reply_code=200, reply_text='OK',
                     class_id=0, method_id=0):
         """Close the connection and all its channels."""
-        if self.closed:
+        if self.state != 'open':
             return
         for channel in self.channels.values():
             if channel.channel_id == 0:
@@ -198,17 +218,18 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
             reply_code, reply_text, class_id, method_id
         )
         self._writer.close()
-        # await self._writer.drain()
-
+        self._heartbeat_task.cancel()
         await self._communicate_task
 
     async def _handle_connection_close(self, method):
-        await super()._handle_conneciton_close(method)
-        exc = AMQPError.from_close_method(method)
+        await super()._handle_connection_close(method)
+        exc = Reply.from_close_method(method)
         await self._exception.put(exc)
+        self.state = 'closed'
 
     async def _communicate(self):
-        while not self.closed or not self._writer.transport.is_closing():
+        transport_closing = self._writer.transport.is_closing
+        while self.state in {'opening', 'open'} and not transport_closing():
             frame_max = self.negotiated_settings.frame_max
             data = await self._reader.read(frame_max)
             if not data:

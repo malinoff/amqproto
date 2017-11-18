@@ -71,6 +71,8 @@ class Connection(BaseChannel):
         # The buffer to accumulate received bytes.
         self._inbound_buffer = io.BytesIO()
 
+        self._missed_heartbeats = 0
+
         self._method_handlers = {
             methods.ConnectionStart: self._handle_connection_start,
             methods.ConnectionSecure: self._handle_connection_secure,
@@ -93,6 +95,7 @@ class Connection(BaseChannel):
         ).parse_stream(self._inbound_buffer)
         if not frames:
             return []
+        self._missed_heartbeats = 0
         if frames[0].frame_type == 'protocol_header':
             frame = frames[0]
             raise replies.ConnectionAborted(
@@ -143,6 +146,7 @@ class Connection(BaseChannel):
     def initiate_connection(self):
         """Initiate connection with the server."""
         # pylint: disable=unsubscriptable-object
+        self.state = 'opening'
         ProtocolHeader.build_stream({
             'payload': {
                 'protocol_major': self.protocol_version[0],
@@ -206,19 +210,32 @@ class Connection(BaseChannel):
 
     def _handle_connection_open_ok(self, method):
         # pylint: disable=unused-argument
-        self.closed = False
+        self.state = 'open'
 
     def _connection_close(self, reply_code, reply_text, class_id, method_id):
         method = methods.ConnectionClose(
             reply_code, reply_text, class_id, method_id,
         )
+        self.state = 'closing'
         return self._prepare_for_sending(method)
 
     def _handle_connection_close_ok(self, method):
         # pylint: disable=unused-argument
-        self.closed = True
+        self.state = 'closed'
 
     def _handle_connection_close(self, method):
         method = methods.ConnectionCloseOK()
-        self.closed = True
+        self.state = 'closing'
         return self._prepare_for_sending(method)
+
+    def _send_heartbeat(self):
+        if self._missed_heartbeats >= 2:
+            timeout = self.negotiated_settings.heartbeat
+            raise replies.ConnectionForced(
+                f'missed heartbeats from server, timeout: {timeout}s'
+            )
+        Frame.build_stream({
+            'frame_type': 'heartbeat',
+            'channel_id': self.channel_id,
+            'payload': None,
+        }, self._outbound_buffer)

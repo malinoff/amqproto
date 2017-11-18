@@ -22,23 +22,23 @@ class Method:
     BY_ID = {}
 
     def __init_subclass__(cls, class_id, method_id, response_to=None,
-                          followed_by_content=False, **kwargs):
+                          followed_by_content=False, closing=False, **kwargs):
         super().__init_subclass__(**kwargs)
 
+        cls.struct = make_struct(cls)
+
+        cls.closing = closing
         cls.followed_by_content = followed_by_content
         if followed_by_content:
             cls.content = attr.ib(default=None)
-
-        cls.struct = make_struct(cls, exclude_attrs={'content'})
-
-        cls.class_id = attr.ib(default=class_id, init=False)
-        cls.method_id = attr.ib(default=method_id, init=False)
-        cls.channel_id = attr.ib(default=None, init=False)
-
         cls.responses = []
         cls.response_to = response_to
         if response_to is not None:
             response_to.responses.append(cls)
+
+        cls.class_id = attr.ib(default=class_id, init=False)
+        cls.method_id = attr.ib(default=method_id, init=False)
+        cls.channel_id = attr.ib(default=None, init=False)
 
         cls.BY_ID[(class_id, method_id)] = cls
 
@@ -61,7 +61,9 @@ class ConnectionStartOK(Method, class_id=10, method_id=11,
                         response_to=ConnectionStart):
     client_properties: d.PeerProperties = attr.ib()
     mechanism: d.ShortStr = attr.ib()
-    response: c.PascalString(d.UnsignedLong) = attr.ib()
+    response: c.PascalString(d.UnsignedLong) = attr.ib(
+        repr=False,  # do not leak passwords via __repr__
+    )
     locale: d.ShortStr = attr.ib()
 
 
@@ -108,7 +110,7 @@ class ConnectionOpenOK(Method, class_id=10, method_id=41,
 
 
 @attr.s()
-class ConnectionClose(Method, class_id=10, method_id=50):
+class ConnectionClose(Method, class_id=10, method_id=50, closing=True):
     reply_code: d.ReplyCode = attr.ib()
     reply_text: d.ReplyText = attr.ib()
     reply_class_id: d.ClassId = attr.ib()
@@ -117,7 +119,7 @@ class ConnectionClose(Method, class_id=10, method_id=50):
 
 @attr.s()
 class ConnectionCloseOK(Method, class_id=10, method_id=51,
-                        response_to=ConnectionClose):
+                        response_to=ConnectionClose, closing=True):
     pass
 
 
@@ -146,7 +148,7 @@ class ChannelFlowOK(Method, class_id=20, method_id=21,
 
 
 @attr.s()
-class ChannelClose(Method, class_id=20, method_id=40):
+class ChannelClose(Method, class_id=20, method_id=40, closing=True):
     reply_code: d.ReplyCode = attr.ib()
     reply_text: d.ReplyText = attr.ib()
     reply_class_id: d.ClassId = attr.ib()
@@ -155,7 +157,7 @@ class ChannelClose(Method, class_id=20, method_id=40):
 
 @attr.s()
 class ChannelCloseOK(Method, class_id=20, method_id=41,
-                     response_to=ChannelClose):
+                     response_to=ChannelClose, closing=True):
     pass
 
 

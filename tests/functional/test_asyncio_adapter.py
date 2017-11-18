@@ -3,7 +3,7 @@ import asyncio
 import pytest
 import requests
 
-from amqproto import AMQPError
+from amqproto import BaseReply
 from amqproto.methods import BasicDeliver, BasicReturn
 from amqproto.adapters.asyncio_adapter import AsyncioConnection
 
@@ -171,7 +171,7 @@ async def test_mandatory_flag_on_existing_queue(channel):
 
 @pytest.mark.asyncio()
 async def test_channel_errors_are_handled_properly(channel):
-    with pytest.raises(AMQPError):
+    with pytest.raises(BaseReply):
         await channel.queue_unbind('amqproto_test_q', '')
 
 
@@ -180,4 +180,4 @@ async def test_heartbeats():
     # Should not raise any connection errors
     async with AsyncioConnection(heartbeat=1) as conn:
         async with conn.get_channel():
-            await asyncio.sleep(4)
+            await asyncio.sleep(2)

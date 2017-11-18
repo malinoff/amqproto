@@ -20,7 +20,7 @@ from . import replies
 from .frames import Frame
 from .utils import chunker
 from .settings import Settings
-from .content import Content, BasicContent
+from .content import BasicContent
 
 
 @attr.s()
@@ -44,7 +44,7 @@ class BaseChannel:
 
     protocol_version = attr.ib(default=(0, 9, 1), init=False)
 
-    closed = attr.ib(default=True, init=False)
+    state = attr.ib(default='closed', init=False)
 
     def __attrs_post_init__(self):
         # The buffer to accumulate all bytes required to be sent.
@@ -88,12 +88,8 @@ class BaseChannel:
             self._content_waiter = method
         return to_return
 
-    def _handle_content_header(self, payload):
-        content_cls = Content.BY_ID[payload.class_id]
-        content = content_cls(
-            body=b'', delivery_info=self._content_waiter,
-            body_size=payload.body_size, properties=payload.properties,
-        )
+    def _handle_content_header(self, content):
+        content.delivery_info = self._content_waiter
         self._content_waiter.content = content
         if content.complete():
             # An empty body
@@ -103,7 +99,7 @@ class BaseChannel:
 
     def _handle_content_body(self, payload):
         waiter = self._content_waiter
-        waiter.content.body += payload.content
+        waiter.content.body += payload
         if waiter.content.complete():
             waiter, self._content_waiter = self._content_waiter, None
             return [waiter]
@@ -113,33 +109,46 @@ class BaseChannel:
         """Prepare the method for sending (including the content,
         if there is one).
         """
+        orig_pos = self._outbound_buffer.tell()
+        try:
+            self._prepare_method_for_sending(method)
+            if not method.followed_by_content:
+                return
+            self._prepare_content_header_for_sending(method.content)
+            self._prepare_content_body_for_sending(method.content)
+        except Exception:
+            # If the building fails, some bytes may be still written.
+            # Let's get rid of them.
+            self._outbound_buffer.seek(orig_pos)
+            self._outbound_buffer.truncate()
+            raise
+
+    def _prepare_method_for_sending(self, method):
         Frame.build_stream({
             'frame_type': 'method',
             'channel_id': self.channel_id,
             'payload': method,
         }, self._outbound_buffer)
-        if not method.followed_by_content:
-            return
+
+    def _prepare_content_header_for_sending(self, content):
         Frame.build_stream({
             'frame_type': 'content_header',
             'channel_id': self.channel_id,
-            'payload': {
-                'class_id': method.content.class_id,
-                'body_size': method.content.body_size,
-                'properties': attr.asdict(method.content.properties),
-            }
+            'payload': content,
         }, self._outbound_buffer)
+
+    def _prepare_content_body_for_sending(self, content):
         # 8 is the frame metadata size:
         # frame_type is UnsignedByte (1),
         # channel_id is UnsignedShort (1 + 2)
         # payload length is UnsignedLong (3 + 4)
         # frame_end is UnsignedByte (7 + 1)
         max_frame_size = self.negotiated_settings.frame_max - 8
-        for chunk in chunker(method.content.body, max_frame_size):
+        for chunk in chunker(content.body, max_frame_size):
             Frame.build_stream({
                 'frame_type': 'content_body',
                 'channel_id': self.channel_id,
-                'payload': {'content': chunk},
+                'payload': chunk,
             }, self._outbound_buffer)
 
 
@@ -182,26 +191,27 @@ class Channel(BaseChannel):
 
     def _channel_open(self):
         method = methods.ChannelOpen()
+        self.state = 'opening'
         return self._prepare_for_sending(method)
 
     def _handle_channel_open_ok(self, method):
         # pylint: disable=unused-argument
-        self.closed = False
+        self.state = 'open'
 
     def _channel_close(self, reply_code, reply_text, class_id, method_id):
         method = methods.ChannelClose(
             reply_code, reply_text, class_id, method_id
         )
-        self.closed = True
+        self.state = 'closing'
         return self._prepare_for_sending(method)
 
     def _handle_channel_close_ok(self, method):
         # pylint: disable=unused-argument
-        self.closed = True
+        self.state = 'closed'
 
     def _handle_channel_close(self, method):
         method = methods.ChannelCloseOK()
-        self.closed = True
+        self.state = 'closing'
         return self._prepare_for_sending(method)
 
     def channel_flow(self, active: bool):
