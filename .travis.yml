@@ -9,6 +9,7 @@ cache: pip
 install:
 - pip install -e .[all]
 - docker-compose up -d
+- sleep 5
 
 script:
 #- pytest -l --cov=amqproto --cov-report=term-missing:skip-covered --cov-config=tests/unit/coveragerc tests/unit
