@@ -1,19 +1,34 @@
+notifications:
+  email: false
+dist: trusty
+sudo: false
+cache:
+  directories:
+  - $HOME/.cache/pip
+
 language: python
-python:
-- "3.6"
-- "3.6-dev"
-- "3.7-dev"
-- "nightly"
-cache: pip
+
+matrix:
+  include:
+  - python: "3.6"
+    env: TOXENV=py36
+  - python: "3.6-dev"
+    env: TOXENV=py36
+  - python: "3.7-dev"
+    env: TOXENV=py37
+  # Meta
+  - python: "3.6"
+    env: TOXENV=codestyle
 
 install:
-- pip install -e .[all]
+- pip install tox
+
+before_script:
 - docker-compose up -d
 - sleep 5
 
 script:
-#- pytest -l --cov=amqproto --cov-report=term-missing:skip-covered --cov-config=tests/unit/coveragerc tests/unit
-- pytest -l --cov=amqproto --cov-report=term-missing:skip-covered --cov-config=tests/functional/coveragerc tests/functional -s
+- tox
 
-#services:
-#- rabbitmq  # required by functional tests
+after_success:
+- tox -e coverage-report

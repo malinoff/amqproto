@@ -1,0 +1,13 @@
+[run]
+branch = True
+parallel = True
+source =
+    amqproto
+
+[paths]
+source =
+   amqproto
+   .tox/*/lib/python*/site-packages/amqproto
+
+[report]
+show_missing = True
