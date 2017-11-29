@@ -1,5 +1,3 @@
-import logging
-logging.basicConfig(level=10)
 import asyncio
 
 import pytest

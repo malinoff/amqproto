@@ -82,17 +82,24 @@ class Connection(BaseChannel):
             methods.ConnectionClose: self._handle_connection_close,
         }
 
+    def _safe_parse_frames(self):
+        current_position = self._inbound_buffer.tell()
+        self._inbound_buffer.seek(0, 0)
+        frames = c.Select(
+            ProtocolHeader[1],
+            Frame[:],
+        ).parse_stream(self._inbound_buffer)
+        if not frames:
+            self._inbound_buffer.seek(current_position, 0)
+        return frames
+
     def parse_data(self, data: bytes) -> typing.List[methods.Method]:
         """Parse some bytes (that may be received by an I/O transmission)
         into list of AMQP frames. This method also handles buffering,
         so it's intended to directly pass bytes received from elsewhere.
         """
         self._inbound_buffer.write(data)
-        self._inbound_buffer.seek(0, 0)  # Seek to the beginning
-        frames = c.Select(
-            ProtocolHeader[1],
-            Frame[:],
-        ).parse_stream(self._inbound_buffer)
+        frames = self._safe_parse_frames()
         if not frames:
             return []
         self._missed_heartbeats = 0
