@@ -192,7 +192,7 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
     async def open(self):
         """Open the connection."""
         self._reader, self._writer = await asyncio.open_connection(
-            **self._connect_args
+            **self._connect_args,
         )
         self.initiate_connection()
         self._writer.write(self.data_to_send())

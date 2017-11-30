@@ -82,15 +82,16 @@ class Connection(BaseChannel):
             methods.ConnectionClose: self._handle_connection_close,
         }
 
-    def _safe_parse_frames(self):
-        current_position = self._inbound_buffer.tell()
-        self._inbound_buffer.seek(0, 0)
+    def _safe_parse_frames(self, data):
+        self._inbound_buffer.write(data)
+        self._inbound_buffer.seek(0)
         frames = c.Select(
             ProtocolHeader[1],
             Frame[:],
         ).parse_stream(self._inbound_buffer)
-        if not frames:
-            self._inbound_buffer.seek(current_position, 0)
+        new_buffer = io.BytesIO()
+        new_buffer.write(self._inbound_buffer.read())
+        self._inbound_buffer = new_buffer
         return frames
 
     def parse_data(self, data: bytes) -> typing.List[methods.Method]:
@@ -98,8 +99,7 @@ class Connection(BaseChannel):
         into list of AMQP frames. This method also handles buffering,
         so it's intended to directly pass bytes received from elsewhere.
         """
-        self._inbound_buffer.write(data)
-        frames = self._safe_parse_frames()
+        frames = self._safe_parse_frames(data)
         if not frames:
             return []
         self._missed_heartbeats = 0
@@ -115,7 +115,6 @@ class Connection(BaseChannel):
                     )),
                 )
             )
-        self._inbound_buffer = io.BytesIO(self._inbound_buffer.read())
         received_methods = []
         for frame in frames:
             # pylint: disable=protected-access

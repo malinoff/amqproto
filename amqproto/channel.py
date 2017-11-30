@@ -649,6 +649,9 @@ class Channel(BaseChannel):
             will queue the message, but with no guarantee that it will ever
             be consumed.
         """
+        if not isinstance(content, (bytes, BasicContent)):
+            raise TypeError('content must be bytes or amqproto.BasicContent,'
+                            f' got {type(content)}')
         # Handle the simplest case of content being a (byte)string.
         if isinstance(content, bytes):
             content = BasicContent(body=content, body_size=len(content))
