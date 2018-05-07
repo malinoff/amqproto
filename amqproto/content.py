@@ -5,106 +5,65 @@ amqproto.content
 AMQP content.
 """
 
-# flake8: noqa=E701
-# pylint: disable=too-few-public-methods
+from datetime import datetime
 
 import attr
-import construct as c
 
-from . import domains as d
-from .utils import make_struct, grouper
-
-
-class PropertiesStruct(c.Construct):
-    """Content header properties have the following format:
-
-    0                2
-    +----------------+-------------- ---
-    | Property flags | Property list ...
-    +----------------+-------------- ---
-          Short
-
-    * The property flags are an array of bits that indicate
-      the presence or absence of each property value in sequence.
-      The bits are ordered from most high to low - bit 15 indicates
-      the first property.
-
-    * The property flags can specify more than 16 properties.
-      If the last bit (0) is set, this indicates that a further property
-      flags field follows. There are many property flags fields as needed.
-
-    * The property values are class-specific AMQP data fields.
-
-    * Bit properties are indicated ONLY by their respective property flag
-      (1 or 0) and are never present in the property list.
-    """
-
-    # pylint: disable=protected-access
-
-    def __init__(self, *subcons):
-        super().__init__()
-        # Group all properties into groups of 15 properties,
-        # 16th bit indicates the contiuation of properties.
-        flags = [prop.name / c.Default(c.Flag, 0)
-                 for group in grouper(subcons, 15, c.Padding(1))
-                 for prop in list(group) + [c.Const(c.Flag, 1)]]
-        # Set the last bit to 0, as there's no more contiuation.
-        if flags:
-            flags[-1].value = 0
-        self.flags = c.BitStruct(*flags)
-
-        def _is_bit(subcon):
-            while True:
-                if isinstance(subcon, c.BitsInteger) and subcon.length == 1:
-                    return True
-                subcon = getattr(subcon, 'subcon', None)
-                if subcon is None:
-                    break
-            return False
-
-        self.subcons = [subcon for subcon in subcons if not _is_bit(subcon)]
-
-    def _parse(self, stream, context, path):
-        flags = self.flags._parse(stream, context, path)
-        obj = c.Container()
-        for subcon in self.subcons:
-            if flags[subcon.name]:
-                value = subcon._parse(stream, context, path)
-                obj[subcon.name] = value
-        return obj
-
-    def _build(self, obj, stream, context, path):
-        self.flags._build(obj, stream, context, path)
-        for subcon in self.subcons:
-            value = obj.get(subcon.name)
-            if value is not None:
-                subcon._build(value, stream, context, path)
-
-    def _sizeof(self, context, path):
-        return self.flags.sizeof() + sum(
-            subcon.sizeof() for subcon in self.subcons
-        )
+from .serialization import load, dump
 
 
 class Properties:
-    """Base class for content properties."""
-
-    struct = None
+    """
+    Base class for content properties.
+    """
+    __slots__ = ()
 
     BY_ID = {}
 
-    def __init_subclass__(cls, class_id, **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.class_id = attr.ib(default=class_id, init=False)
-        cls.struct = make_struct(
-            cls, exclude_attrs={'class_id'}, struct=PropertiesStruct
+    @classmethod
+    def register(cls, spec, class_id):
+        def decorator(properties):
+            properties.spec = spec
+            properties.class_id = class_id
+            cls.BY_ID[class_id] = properties
+            return properties
+        return decorator
+
+    @classmethod
+    def read(cls, reader):
+        property_flags = []
+        while True:
+            flags = bin(reader.read_short())[2:]
+            if flags[0] == '0':
+                break
+            property_flags.extend(flag == '1' for flag in flags[1:])
+        assert len(property_flags) == len(cls.spec)
+        spec = ''.join(
+            char
+            for char, present in zip(cls.spec, property_flags)
+            if present
         )
-        cls.BY_ID[class_id] = cls
+        return cls(*load(spec, reader))
+
+    def write(self, writer):
+        # TODO support for the 16th bit set
+        properties = attr.astuple(self)
+        spec = ''.join(
+            char
+            for char, prop in zip(self.spec, properties)
+            if prop is not None
+        )
+        flags = ''.join('0' if prop is None else '1' for prop in properties)
+        flags = int(flags, 2)
+        writer.write_short(flags)
+        dump(spec, writer, *properties)
 
 
-@attr.s()
+@attr.s(slots=True)
 class Content:
-    """Describes an AMQP content."""
+    """
+    Describes an AMQP content.
+    """
 
     body: bytes = attr.ib()
     body_size: int = attr.ib()
@@ -122,32 +81,55 @@ class Content:
         """
         return len(self.body) == self.body_size
 
-    def __init_subclass__(cls, class_id, **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.class_id = class_id
-        cls.BY_ID[class_id] = cls
+    @classmethod
+    def register(cls, class_id):
+        def decorator(content):
+            content.class_id = class_id
+            cls.BY_ID[class_id] = content
+            return content
+        return decorator
+
+    @classmethod
+    def read(cls, reader):
+        class_id = reader.read_short()
+        weight = reader.read_octet()  # noqa: F841
+        assert weight == 0
+        body_size = reader.read_long_long()
+        properties = Properties.BY_ID[class_id].read(reader)
+        return cls.BY_ID[class_id](b'', body_size, properties)
+
+    def write(self, writer):
+        writer.write_short(self.class_id)
+        writer.write_octet(0)  # weight
+        writer.write_long_long(self.body_size)
+        self.properties.write(writer)
 
 
-@attr.s()
-class BasicProperties(Properties, class_id=60):
+@Properties.register(spec='ssTBBsssstssss', class_id=60)
+@attr.s(slots=True)
+class BasicProperties(Properties):
     """Basic properties."""
 
-    content_type: d.ShortStr = attr.ib(None)
-    content_encoding: d.ShortStr = attr.ib(None)
-    headers: d.Table = attr.ib(None)
-    delivery_mode: d.Octet = attr.ib(None)
-    priority: d.Octet = attr.ib(None)
-    correlation_id: d.ShortStr = attr.ib(None)
-    reply_to: d.ShortStr = attr.ib(None)
-    expiration: d.ShortStr = attr.ib(None)
-    message_id: d.ShortStr = attr.ib(None)
-    timestamp: d.Timestamp = attr.ib(None)
-    type: d.ShortStr = attr.ib(None)
-    user_id: d.ShortStr = attr.ib(None)
-    app_id: d.ShortStr = attr.ib(None)
+    content_type: str = attr.ib(None)
+    content_encoding: str = attr.ib(None)
+    headers: dict = attr.ib(None)
+    delivery_mode: int = attr.ib(None)
+    priority: int = attr.ib(None)
+    correlation_id: str = attr.ib(None)
+    reply_to: str = attr.ib(None)
+    expiration: str = attr.ib(None)
+    message_id: str = attr.ib(None)
+    timestamp: datetime = attr.ib(None)
+    type: str = attr.ib(None)
+    user_id: str = attr.ib(None)
+    app_id: str = attr.ib(None)
     # Deprecated
-    cluster_id: d.ShortStr = attr.ib(default=None, init=False, repr=False)
+    cluster_id: str = attr.ib(default=None, init=False, repr=False)
 
 
-class BasicContent(Content, class_id=60):
-    """Basic content."""
+@Content.register(class_id=60)
+@attr.s(slots=True)
+class BasicContent(Content):
+    """
+    Basic content.
+    """

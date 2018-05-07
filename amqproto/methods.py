@@ -4,483 +4,554 @@ amqproto.methods
 
 AMQP methods.
 """
-# flake8: noqa=E701
-# pylint: disable=missing-docstring
 
 import attr
-import construct as c
-
-from . import domains as d
-from .utils import make_struct
 
 
-@attr.s()
+@attr.s(slots=True)
 class Method:
     """Describes an AMQP method."""
-    struct = None
 
     BY_ID = {}
 
-    def __init_subclass__(cls, class_id, method_id, response_to=None,
-                          followed_by_content=False, closing=False, **kwargs):
-        super().__init_subclass__(**kwargs)
+    @classmethod
+    def register(cls, spec, class_id, method_id, response_to=None,
+                 followed_by_content=False, closing=False):
+        def decorator(method):
+            method.spec = spec
+            method.closing = closing
+            method.followed_by_content = followed_by_content
+            method.responses = set()
+            method.response_to = response_to
+            if response_to is not None:
+                response_to.responses.add(method)
 
-        cls.struct = make_struct(cls)
+            method.class_id = class_id
+            method.method_id = method_id
 
-        cls.closing = closing
-        cls.followed_by_content = followed_by_content
-        if followed_by_content:
-            cls.content = attr.ib(default=None)
-        cls.responses = []
-        cls.response_to = response_to
-        if response_to is not None:
-            response_to.responses.append(cls)
-
-        cls.class_id = attr.ib(default=class_id, init=False)
-        cls.method_id = attr.ib(default=method_id, init=False)
-        cls.channel_id = attr.ib(default=None, init=False)
-
-        cls.BY_ID[(class_id, method_id)] = cls
+            cls.BY_ID[(class_id, method_id)] = method
+            return method
+        return decorator
 
     def has_response(self):
         """Tells if this method has response that needs to be awaited."""
         return self.responses and not getattr(self, 'no_wait', False)
 
+    @classmethod
+    def read(cls, reader):
+        if cls is Method:
+            class_id = reader.read_short()
+            method_id = reader.read_short()
+            return cls.BY_ID[(class_id, method_id)].read(reader)
+        return cls(*load(cls.spec, reader))
 
-@attr.s()
-class ConnectionStart(Method, class_id=10, method_id=10):
-    version_major: d.Octet = attr.ib(default=0, init=False)
-    version_minor: d.Octet = attr.ib(default=9, init=False)
-    server_properties: d.PeerProperties = attr.ib()
-    mechanisms: d.LongStr = attr.ib()
-    locales: d.LongStr = attr.ib()
-
-
-@attr.s()
-class ConnectionStartOK(Method, class_id=10, method_id=11,
-                        response_to=ConnectionStart):
-    client_properties: d.PeerProperties = attr.ib()
-    mechanism: d.ShortStr = attr.ib()
-    response: c.PascalString(d.UnsignedLong) = attr.ib(
-        repr=False,  # do not leak passwords via __repr__
-    )
-    locale: d.ShortStr = attr.ib()
+    def write(self, writer):
+        writer.write_short(self.class_id)
+        writer.write_short(self.method_id)
+        dump(self.spec, writer, attr.astuple(self))
 
 
-@attr.s()
-class ConnectionSecure(Method, class_id=10, method_id=20):
-    challenge: d.LongStr = attr.ib()
+@Method.register(spec='BBTSS', class_id=10, method_id=10)
+@attr.s(slots=True)
+class ConnectionStart(Method):
+    version_major: int = attr.ib(default=0, init=False)
+    version_minor: int = attr.ib(default=9, init=False)
+    server_properties: dict = attr.ib(default=attr.Factory(dict))
+    mechanisms: list = attr.ib(default=attr.Factory(lambda: ['PLAIN']))
+    locales: list = attr.ib(default=attr.Factory(lambda: ['EN_US']))
 
 
-@attr.s()
-class ConnectionSecureOK(Method, class_id=10, method_id=21,
-                         response_to=ConnectionSecure):
-    response: d.LongStr = attr.ib()
+@Method.register(spec='TsSs', class_id=10, method_id=11,
+                 response_to=ConnectionStart)
+@attr.s(slots=True)
+class ConnectionStartOK(Method):
+    client_properties: dict = attr.ib()
+    mechanism: str = attr.ib()
+    response: str = attr.ib(repr=False)  # do not leak passwords via __repr__
+    locale: str = attr.ib()
 
 
-@attr.s()
-class ConnectionTune(Method, class_id=10, method_id=30):
-    channel_max: d.Short = attr.ib()
-    frame_max: d.Long = attr.ib()
-    heartbeat: d.Short = attr.ib()
+@Method.register(spec='S', class_id=10, method_id=20)
+@attr.s(slots=True)
+class ConnectionSecure(Method):
+    challenge: str = attr.ib()
 
 
-@attr.s()
-class ConnectionTuneOK(Method, class_id=10, method_id=31,
-                       response_to=ConnectionTune):
-    channel_max: d.Short = attr.ib()
-    frame_max: d.Long = attr.ib()
-    heartbeat: d.Short = attr.ib()
+@Method.register(spec='S', class_id=10, method_id=21,
+                 response_to=ConnectionSecure)
+@attr.s(slots=True)
+class ConnectionSecureOK(Method):
+    response: str = attr.ib()
 
 
-@attr.s()
-class ConnectionOpen(Method, class_id=10, method_id=40):
-    virtual_host: d.Path = attr.ib()
+@Method.register(spec='HLH', class_id=10, method_id=30)
+@attr.s(slots=True)
+class ConnectionTune(Method):
+    channel_max: int = attr.ib()
+    frame_max: int = attr.ib()
+    heartbeat: int = attr.ib()
+
+
+@Method.register(spec='HLH', class_id=10, method_id=31,
+                 response_to=ConnectionTune)
+@attr.s(slots=True)
+class ConnectionTuneOK(Method):
+    channel_max: int = attr.ib()
+    frame_max: int = attr.ib()
+    heartbeat: int = attr.ib()
+
+
+@Method.register(spec='ss?', class_id=10, method_id=40)
+@attr.s(slots=True)
+class ConnectionOpen(Method):
+    virtual_host: str = attr.ib()
     # Deprecated
-    capabilities: d.ShortStr = attr.ib(default='', init=False, repr=False)
+    capabilities: str = attr.ib(default='', init=False, repr=False)
     # Deprecated
-    insist: d.Bit = attr.ib(default=0, init=False, repr=False)
+    insist: bool = attr.ib(default=False, init=False, repr=False)
 
 
-@attr.s()
-class ConnectionOpenOK(Method, class_id=10, method_id=41,
-                       response_to=ConnectionOpen):
+@Method.register(spec='s', class_id=10, method_id=41,
+                 response_to=ConnectionOpen)
+@attr.s(slots=True)
+class ConnectionOpenOK(Method):
     # Deprecated
-    known_hosts: d.Shortstr = attr.ib(default='', init=False, repr=False)
+    known_hosts: str = attr.ib(default='', init=False, repr=False)
 
 
-@attr.s()
-class ConnectionClose(Method, class_id=10, method_id=50, closing=True):
-    reply_code: d.ReplyCode = attr.ib()
-    reply_text: d.ReplyText = attr.ib()
-    reply_class_id: d.ClassId = attr.ib()
-    reply_method_id: d.MethodId = attr.ib()
+@Method.register(spec='HsHH', class_id=10, method_id=50, closing=True)
+@attr.s(slots=True)
+class ConnectionClose(Method):
+    reply_code: int = attr.ib()
+    reply_text: str = attr.ib()
+    reply_class_id: int = attr.ib()
+    reply_method_id: int = attr.ib()
 
 
-@attr.s()
-class ConnectionCloseOK(Method, class_id=10, method_id=51,
-                        response_to=ConnectionClose, closing=True):
+@Method.register(spec='', class_id=10, method_id=51,
+                 response_to=ConnectionClose, closing=True)
+@attr.s(slots=True)
+class ConnectionCloseOK(Method):
     pass
 
 
-@attr.s()
-class ChannelOpen(Method, class_id=20, method_id=10):
+@Method.register(spec='s', class_id=20, method_id=10)
+@attr.s(slots=True)
+class ChannelOpen(Method):
     # Deprecated
-    out_of_band: d.ShortStr = attr.ib(default='', init=False, repr=False)
+    out_of_band: str = attr.ib(default='', init=False, repr=False)
 
 
-@attr.s()
-class ChannelOpenOK(Method, class_id=20, method_id=11,
-                    response_to=ChannelOpen):
+@Method.register(spec='L', class_id=20, method_id=11,
+                 response_to=ChannelOpen)
+@attr.s(slots=True)
+class ChannelOpenOK(Method):
     # Deprecated
-    channel_id: d.LongStr = attr.ib(default='', init=False, repr=False)
+    channel_id: str = attr.ib(default='', init=False, repr=False)
 
 
-@attr.s()
-class ChannelFlow(Method, class_id=20, method_id=20):
-    active: d.Bit = attr.ib()
+@Method.register(spec='?', class_id=20, method_id=20)
+@attr.s(slots=True)
+class ChannelFlow(Method):
+    active: bool = attr.ib()
 
 
-@attr.s()
-class ChannelFlowOK(Method, class_id=20, method_id=21,
-                    response_to=ChannelFlow):
-    active: d.Bit = attr.ib()
+@Method.register(spec='?', class_id=20, method_id=21,
+                 response_to=ChannelFlow)
+@attr.s(slots=True)
+class ChannelFlowOK(Method):
+    active: bool = attr.ib()
 
 
-@attr.s()
-class ChannelClose(Method, class_id=20, method_id=40, closing=True):
-    reply_code: d.ReplyCode = attr.ib()
-    reply_text: d.ReplyText = attr.ib()
-    reply_class_id: d.ClassId = attr.ib()
-    reply_method_id: d.MethodId = attr.ib()
+@Method.register(spec='HsHH', class_id=20, method_id=40, closing=True)
+@attr.s(slots=True)
+class ChannelClose(Method):
+    reply_code: int = attr.ib()
+    reply_text: str = attr.ib()
+    reply_class_id: int = attr.ib()
+    reply_method_id: int = attr.ib()
 
 
-@attr.s()
-class ChannelCloseOK(Method, class_id=20, method_id=41,
-                     response_to=ChannelClose, closing=True):
+@Method.register(spec='', class_id=20, method_id=41,
+                 response_to=ChannelClose, closing=True)
+@attr.s(slots=True)
+class ChannelCloseOK(Method):
     pass
 
 
-@attr.s()
-class ExchangeDeclare(Method, class_id=40, method_id=10):
+@Method.register(spec='Hss?????T', class_id=40, method_id=10)
+@attr.s(slots=True)
+class ExchangeDeclare(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    exchange: d.ExchangeName = attr.ib()
-    type: d.Shortstr = attr.ib()
-    passive: d.Bit = attr.ib()
-    durable: d.Bit = attr.ib()
-    auto_delete: d.Bit = attr.ib()
-    internal: d.Bit = attr.ib()
-    no_wait: d.NoWait = attr.ib()
-    arguments: d.Table = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    exchange: str = attr.ib()
+    type: str = attr.ib()
+    passive: bool = attr.ib()
+    durable: bool = attr.ib()
+    auto_delete: bool = attr.ib()
+    internal: bool = attr.ib()
+    no_wait: bool = attr.ib()
+    arguments: bool = attr.ib()
 
 
-@attr.s()
-class ExchangeDeclareOK(Method, class_id=40, method_id=11,
-                        response_to=ExchangeDeclare):
+@Method.register(spec='', class_id=40, method_id=11,
+                 response_to=ExchangeDeclare)
+@attr.s(slots=True)
+class ExchangeDeclareOK(Method):
     pass
 
 
-@attr.s()
-class ExchangeDelete(Method, class_id=40, method_id=20):
+@Method.register(spec='Hs??', class_id=40, method_id=20)
+@attr.s(slots=True)
+class ExchangeDelete(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    exchange: d.ExchangeName = attr.ib()
-    if_unused: d.Bit = attr.ib()
-    no_wait: d.NoWait = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    exchange: str = attr.ib()
+    if_unused: bool = attr.ib()  # noqa: E701
+    no_wait: bool = attr.ib()
 
 
-@attr.s()
-class ExchangeDeleteOK(Method, class_id=40, method_id=21,
-                       response_to=ExchangeDelete):
+@Method.register(spec='', class_id=40, method_id=21,
+                 response_to=ExchangeDelete)
+@attr.s(slots=True)
+class ExchangeDeleteOK(Method):
     pass
 
 
-@attr.s()
-class ExchangeBind(Method, class_id=40, method_id=30):
+@Method.register(spec='Hsss?T', class_id=40, method_id=30)
+@attr.s(slots=True)
+class ExchangeBind(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    destination: d.ExchangeName = attr.ib()
-    source: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
-    no_wait: d.NoWait = attr.ib()
-    arguments: d.Table = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    destination: str = attr.ib()
+    source: str = attr.ib()
+    routing_key: str = attr.ib()
+    no_wait: bool = attr.ib()
+    arguments: dict = attr.ib()
 
 
-@attr.s()
-class ExchangeBindOK(Method, class_id=40, method_id=31,
-                     response_to=ExchangeBind):
+@Method.register(spec='', class_id=40, method_id=31,
+                 response_to=ExchangeBind)
+@attr.s(slots=True)
+class ExchangeBindOK(Method):
     pass
 
 
-@attr.s()
-class ExchangeUnbind(Method, class_id=40, method_id=40):
+@Method.register(spec='Hsss?T', class_id=40, method_id=40)
+@attr.s(slots=True)
+class ExchangeUnbind(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    destination: d.ExchangeName = attr.ib()
-    source: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
-    no_wait: d.NoWait = attr.ib()
-    arguments: d.Table = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    destination: str = attr.ib()
+    source: str = attr.ib()
+    routing_key: str = attr.ib()
+    no_wait: bool = attr.ib()
+    arguments: dict = attr.ib()
 
 
-@attr.s()
-class ExchangeUnbindOK(Method, class_id=40, method_id=41,
-                       response_to=ExchangeUnbind):
+@Method.register(spec='', class_id=40, method_id=41,
+                 response_to=ExchangeUnbind)
+@attr.s(slots=True)
+class ExchangeUnbindOK(Method):
     pass
 
 
-@attr.s()
-class QueueDeclare(Method, class_id=50, method_id=10):
+@Method.register(spec='Hs?????T', class_id=50, method_id=10)
+@attr.s(slots=True)
+class QueueDeclare(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    queue: d.QueueName = attr.ib()
-    passive: d.Bit = attr.ib()
-    durable: d.Bit = attr.ib()
-    exclusive: d.Bit = attr.ib()
-    auto_delete: d.Bit = attr.ib()
-    no_wait: d.NoWait = attr.ib()
-    arguments: d.Table = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    queue: str = attr.ib()
+    passive: bool = attr.ib()
+    durable: bool = attr.ib()
+    exclusive: bool = attr.ib()
+    auto_delete: bool = attr.ib()
+    no_wait: bool = attr.ib()
+    arguments: bool = attr.ib()
 
 
-@attr.s()
-class QueueDeclareOK(Method, class_id=50, method_id=11,
-                     response_to=QueueDeclare):
-    queue: d.QueueName = attr.ib()
-    message_count: d.MessageCount = attr.ib()
-    consumer_count: d.Long = attr.ib()
+@Method.register(spec='sLL', class_id=50, method_id=11,
+                 response_to=QueueDeclare)
+@attr.s(slots=True)
+class QueueDeclareOK(Method):
+    queue: str = attr.ib()
+    message_count: int = attr.ib()
+    consumer_count: int = attr.ib()
 
 
-@attr.s()
-class QueueBind(Method, class_id=50, method_id=20):
+@Method.register(spec='Hsss?T', class_id=50, method_id=20)
+@attr.s(slots=True)
+class QueueBind(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    queue: d.QueueName = attr.ib()
-    exchange: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
-    no_wait: d.NoWait = attr.ib()
-    arguments: d.Table = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    queue: str = attr.ib()
+    exchange: str = attr.ib()
+    routing_key: str = attr.ib()
+    no_wait: bool = attr.ib()
+    arguments: dict = attr.ib()
 
 
-@attr.s()
-class QueueBindOK(Method, class_id=50, method_id=21, response_to=QueueBind):
+@Method.register(spec='', class_id=50, method_id=21,
+                 response_to=QueueBind)
+@attr.s(slots=True)
+class QueueBindOK(Method):
     pass
 
 
-@attr.s()
-class QueueUnbind(Method, class_id=50, method_id=50):
+@Method.register(spec='HsssT', class_id=50, method_id=50)
+@attr.s(slots=True)
+class QueueUnbind(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    queue: d.QueueName = attr.ib()
-    exchange: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
-    arguments: d.Table = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    queue: str = attr.ib()
+    exchange: str = attr.ib()
+    routing_key: str = attr.ib()
+    arguments: dict = attr.ib()
 
 
-@attr.s()
-class QueueUnbindOK(Method, class_id=50, method_id=51,
-                    response_to=QueueUnbind):
+@Method.register(spec='', class_id=50, method_id=51,
+                 response_to=QueueUnbind)
+@attr.s(slots=True)
+class QueueUnbindOK(Method):
     pass
 
 
-@attr.s()
-class QueuePurge(Method, class_id=50, method_id=30):
+@Method.register(spec='Hs?', class_id=50, method_id=30)
+@attr.s(slots=True)
+class QueuePurge(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    queue: d.QueueName = attr.ib()
-    no_wait: d.NoWait = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    queue: str = attr.ib()
+    no_wait: bool = attr.ib()
 
 
-@attr.s()
-class QueuePurgeOK(Method, class_id=50, method_id=31,
-                   response_to=QueuePurge):
-    message_count: d.MessageCount = attr.ib()
+@Method.register(spec='L', class_id=50, method_id=31,
+                 response_to=QueuePurge)
+@attr.s(slots=True)
+class QueuePurgeOK(Method):
+    message_count: int = attr.ib()
 
 
-@attr.s()
-class QueueDelete(Method, class_id=50, method_id=40):
+@Method.register(spec='Hs???', class_id=50, method_id=40)
+@attr.s(slots=True)
+class QueueDelete(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    queue: d.QueueName = attr.ib()
-    if_unused: d.Bit = attr.ib()
-    if_empty: d.Bit = attr.ib()
-    no_wait: d.NoWait = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    queue: str = attr.ib()
+    if_unused: bool = attr.ib()  # noqa: E701
+    if_empty: bool = attr.ib()  # noqa: E701
+    no_wait: bool = attr.ib()
 
 
-@attr.s()
-class QueueDeleteOK(Method, class_id=50, method_id=41,
-                    response_to=QueueDelete):
-    message_count: d.MessageCount = attr.ib()
+@Method.register(spec='L', class_id=50, method_id=41,
+                 response_to=QueueDelete)
+@attr.s(slots=True)
+class QueueDeleteOK(Method):
+    message_count: int = attr.ib()
 
 
-@attr.s()
-class BasicQos(Method, class_id=60, method_id=10):
-    prefetch_size: d.Long = attr.ib()
-    prefetch_count: d.Short = attr.ib()
-    global_: d.Bit = attr.ib()
+@Method.register(spec='LH?', class_id=60, method_id=10)
+@attr.s(slots=True)
+class BasicQos(Method):
+    prefetch_size: int = attr.ib()
+    prefetch_count: int = attr.ib()
+    global_: bool = attr.ib()
 
 
-@attr.s()
-class BasicQosOK(Method, class_id=60, method_id=11, response_to=BasicQos):
+@Method.register(spec='', class_id=60, method_id=11,
+                 response_to=BasicQos)
+@attr.s(slots=True)
+class BasicQosOK(Method):
     pass
 
 
-@attr.s()
-class BasicConsume(Method, class_id=60, method_id=20):
+@Method.register(spec='Hss????T', class_id=60, method_id=20)
+@attr.s(slots=True)
+class BasicConsume(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    queue: d.QueueName = attr.ib()
-    consumer_tag: d.ConsumerTag = attr.ib()
-    no_local: d.NoLocal = attr.ib()
-    no_ack: d.NoAck = attr.ib()
-    exclusive: d.Bit = attr.ib()
-    no_wait: d.NoWait = attr.ib()
-    arguments: d.Table = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    queue: str = attr.ib()
+    consumer_tag: str = attr.ib()
+    no_local: bool = attr.ib()
+    no_ack: bool = attr.ib()
+    exclusive: bool = attr.ib()
+    no_wait: bool = attr.ib()
+    arguments: dict = attr.ib()
 
 
-@attr.s()
-class BasicConsumeOK(Method, class_id=60, method_id=21,
-                     response_to=BasicConsume):
-    consumer_tag: d.ConsumerTag = attr.ib()
+@Method.register(spec='s', class_id=60, method_id=21,
+                 response_to=BasicConsume)
+@attr.s(slots=True)
+class BasicConsumeOK(Method):
+    consumer_tag: str = attr.ib()
 
 
-@attr.s()
-class BasicCancel(Method, class_id=60, method_id=30):
-    consumer_tag: d.ConsumerTag = attr.ib()
-    no_wait: d.NoWait = attr.ib()
+@Method.register(spec='s?', class_id=60, method_id=30)
+@attr.s(slots=True)
+class BasicCancel(Method):
+    consumer_tag: str = attr.ib()
+    no_wait: bool = attr.ib()
 
 
-@attr.s()
-class BasicCancelOK(Method, class_id=60, method_id=31,
-                    response_to=BasicCancel):
-    consumer_tag: d.ConsumerTag = attr.ib()
+@Method.register(spec='s', class_id=60, method_id=31,
+                 response_to=BasicCancel)
+@attr.s(slots=True)
+class BasicCancelOK(Method):
+    consumer_tag: str = attr.ib()
 
 
-@attr.s()
-class BasicPublish(Method, class_id=60, method_id=40,
-                   followed_by_content=True):
+@Method.register(spec='Hss??', class_id=60, method_id=40,
+                 followed_by_content=True)
+@attr.s(slots=True)
+class BasicPublish(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    exchange: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
-    mandatory: d.Bit = attr.ib()
-    immediate: d.Bit = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    exchange: str = attr.ib()
+    routing_key: str = attr.ib()
+    mandatory: bool = attr.ib()
+    immediate: bool = attr.ib()
 
 
-@attr.s()
-class BasicReturn(Method, class_id=60, method_id=50,
-                  followed_by_content=True):
-    reply_code: d.ReplyCode = attr.ib()
-    reply_text: d.ReplyText = attr.ib()
-    exchange: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
+@Method.register(spec='Hsss', class_id=60, method_id=50,
+                 followed_by_content=True)
+@attr.s(slots=True)
+class BasicReturn(Method):
+    reply_code: int = attr.ib()
+    reply_text: str = attr.ib()
+    exchange: str = attr.ib()
+    routing_key: str = attr.ib()
 
 
-@attr.s()
-class BasicDeliver(Method, class_id=60, method_id=60,
-                   followed_by_content=True):
-    consumer_tag: d.ConsumerTag = attr.ib()
-    delivery_tag: d.DeliveryTag = attr.ib()
-    redelivered: d.Redelivered = attr.ib()
-    exchange: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
+@Method.register(spec='sQ?ss', class_id=60, method_id=60,
+                 followed_by_content=True)
+@attr.s(slots=True)
+class BasicDeliver(Method):
+    consumer_tag: str = attr.ib()
+    delivery_tag: int = attr.ib()
+    redelivered: bool = attr.ib()
+    exchange: str = attr.ib()
+    routing_key: str = attr.ib()
 
 
-@attr.s()
-class BasicGet(Method, class_id=60, method_id=70):
+@Method.register(spec='Hs?', class_id=60, method_id=70)
+@attr.s(slots=True)
+class BasicGet(Method):
     # Deprecated
-    ticket: d.Short = attr.ib(default=0, init=False, repr=False)
-    queue: d.QueueName = attr.ib()
-    no_ack: d.NoAck = attr.ib()
+    ticket: int = attr.ib(default=0, init=False, repr=False)
+    queue: str = attr.ib()
+    no_ack: bool = attr.ib()
 
 
-@attr.s()
-class BasicGetOK(Method, class_id=60, method_id=71,
-                 response_to=BasicGet, followed_by_content=True):
-    delivery_tag: d.DeliveryTag = attr.ib()
-    redelivered: d.Redelivered = attr.ib()
-    exchange: d.ExchangeName = attr.ib()
-    routing_key: d.Shortstr = attr.ib()
-    message_count: d.MessageCount = attr.ib()
+@Method.register(spec='Q?ssL', class_id=60, method_id=71,
+                 response_to=BasicGet, followed_by_content=True)
+@attr.s(slots=True)
+class BasicGetOK(Method):
+    delivery_tag: int = attr.ib()
+    redelivered: bool = attr.ib()
+    exchange: str = attr.ib()
+    routing_key: str = attr.ib()
+    message_count: int = attr.ib()
 
 
-@attr.s()
-class BasicGetEmpty(Method, class_id=60, method_id=72, response_to=BasicGet):
+@Method.register(spec='s', class_id=60, method_id=72,
+                 response_to=BasicGet)
+@attr.s(slots=True)
+class BasicGetEmpty(Method):
     # Deprecated
-    cluster_id: d.ShortStr = attr.ib(default='', init=False, repr=False)
+    cluster_id: str = attr.ib(default='', init=False, repr=False)
 
 
-@attr.s()
-class BasicAck(Method, class_id=60, method_id=80):
-    delivery_tag: d.DeliveryTag = attr.ib()
-    multiple: d.Bit = attr.ib()
+@Method.register(spec='Q?', class_id=60, method_id=80)
+@attr.s(slots=True)
+class BasicAck(Method):
+    delivery_tag: int = attr.ib()
+    multiple: bool = attr.ib()
 
 
-@attr.s()
-class BasicReject(Method, class_id=60, method_id=90):
-    delivery_tag: d.DeliveryTag = attr.ib()
-    requeue: d.Bit = attr.ib()
+@Method.register(spec='Q?', class_id=60, method_id=90)
+@attr.s(slots=True)
+class BasicReject(Method):
+    delivery_tag: int = attr.ib()
+    requeue: bool = attr.ib()
 
 
-@attr.s()
-class BasicRecoverAsync(Method, class_id=60, method_id=100):
-    requeue: d.Bit = attr.ib()
+@Method.register(spec='?', class_id=60, method_id=100)
+@attr.s(slots=True)
+class BasicRecoverAsync(Method):
+    requeue: bool = attr.ib()
 
 
-@attr.s()
-class BasicRecover(Method, class_id=60, method_id=110):
-    requeue: d.Bit = attr.ib()
+@Method.register(spec='?', class_id=60, method_id=110)
+@attr.s(slots=True)
+class BasicRecover(Method):
+    requeue: bool = attr.ib()
 
 
-@attr.s()
-class BasicRecoverOK(Method, class_id=60, method_id=111,
-                     response_to=BasicRecover):
+@Method.register(spec='', class_id=60, method_id=111,
+                 response_to=BasicRecover)
+@attr.s(slots=True)
+class BasicRecoverOK(Method):
     pass
 
 
-@attr.s()
-class BasicNack(Method, class_id=60, method_id=120):
-    delivery_tag: d.DeliveryTag = attr.ib()
-    multiple: d.Bit = attr.ib()
-    requeue: d.Bit = attr.ib()
+@Method.register(spec='Q??', class_id=60, method_id=120)
+@attr.s(slots=True)
+class BasicNack(Method):
+    delivery_tag: int = attr.ib()
+    multiple: bool = attr.ib()
+    requeue: bool = attr.ib()
 
 
-@attr.s()
-class TxSelect(Method, class_id=90, method_id=10):
+@Method.register(spec='', class_id=90, method_id=10)
+@attr.s(slots=True)
+class TxSelect(Method):
     pass
 
 
-@attr.s()
-class TxSelectOK(Method, class_id=90, method_id=11, response_to=TxSelect):
+@Method.register(spec='', class_id=90, method_id=11,
+                 response_to=TxSelect)
+@attr.s(slots=True)
+class TxSelectOK(Method):
     pass
 
 
-@attr.s()
-class TxCommit(Method, class_id=90, method_id=20):
+@Method.register(spec='', class_id=90, method_id=20)
+@attr.s(slots=True)
+class TxCommit(Method):
     pass
 
 
-@attr.s()
-class TxCommitOK(Method, class_id=90, method_id=21, response_to=TxCommit):
+@Method.register(spec='', class_id=90, method_id=21,
+                 response_to=TxCommit)
+@attr.s(slots=True)
+class TxCommitOK(Method):
     pass
 
 
-@attr.s()
-class TxRollback(Method, class_id=90, method_id=30):
+@Method.register(spec='', class_id=90, method_id=30)
+@attr.s(slots=True)
+class TxRollback(Method):
     pass
 
 
-@attr.s()
-class TxRollbackOK(Method, class_id=90, method_id=31, response_to=TxRollback):
+@Method.register(spec='', class_id=90, method_id=31,
+                 response_to=TxRollback)
+@attr.s(slots=True)
+class TxRollbackOK(Method):
     pass
 
 
-@attr.s()
-class ConfirmSelect(Method, class_id=85, method_id=10):
-    no_wait: d.Bit = attr.ib(default=False)
+@Method.register(spec='?', class_id=85, method_id=10)
+@attr.s(slots=True)
+class ConfirmSelect(Method):
+    no_wait: bool = attr.ib(default=False)
 
 
-@attr.s()
-class ConfirmSelectOK(Method, class_id=85, method_id=11,
-                      response_to=ConfirmSelect):
+@Method.register(spec='', class_id=85, method_id=11,
+                      response_to=ConfirmSelect)
+@attr.s(slots=True)
+class ConfirmSelectOK(Method):
     pass
+
+
+from .serialization import load, dump  # noqa: E402

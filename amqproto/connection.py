@@ -8,18 +8,18 @@ Sans-I/O implementations of AMQP connections.
 # Pylint can't handle attrs magic.
 # pylint: disable=attribute-defined-outside-init,no-member,assigning-non-slot
 
-import io
 import typing
+import struct
+from collections import defaultdict
 
 import attr
-import construct as c
 
 from . import sasl
 from . import replies
 from . import methods
 from .settings import Settings
+from .serialization import Reader
 from .channel import BaseChannel, Channel
-from .frames import Frame, ProtocolHeader
 
 
 @attr.s()
@@ -69,7 +69,7 @@ class Connection(BaseChannel):
         self._next_channel_id = 1
 
         # The buffer to accumulate received bytes.
-        self._inbound_buffer = io.BytesIO()
+        self._inbound_buffer = bytearray()
 
         self._missed_heartbeats = 0
 
@@ -82,56 +82,53 @@ class Connection(BaseChannel):
             methods.ConnectionClose: self._handle_connection_close,
         }
 
-    def _safe_parse_frames(self, data):
-        self._inbound_buffer.write(data)
-        self._inbound_buffer.seek(0)
-        frames = c.Select(
-            ProtocolHeader[1],
-            Frame[:],
-        ).parse_stream(self._inbound_buffer)
-        new_buffer = io.BytesIO()
-        new_buffer.write(self._inbound_buffer.read())
-        self._inbound_buffer = new_buffer
-        return frames
+    def _parse_protocol_header(self):
+        if not self._inbound_buffer.startswith(b'AMQP\x00'):
+            raise replies.ConnectionAborted('cannot parse {}'.format(
+                self._inbound_buffer
+            ))
+        server_version = struct.unpack('>BBB', self._inbound_buffer[5:])
+        del self._inbound_buffer[:8]
+        raise replies.ConnectionAborted(
+            'AMQP version mismatch, we are {}, server is {}'.format(
+                '.'.join(self.protocol_version),
+                '.'.join(server_version),
+            )
+        )
 
     def parse_data(self, data: bytes) -> typing.List[methods.Method]:
         """Parse some bytes (that may be received by an I/O transmission)
         into list of AMQP frames. This method also handles buffering,
         so it's intended to directly pass bytes received from elsewhere.
         """
-        frames = self._safe_parse_frames(data)
-        if not frames:
-            return []
         self._missed_heartbeats = 0
-        if frames[0].frame_type == 'protocol_header':
-            frame = frames[0]
-            raise replies.ConnectionAborted(
-                'AMQP version mismatch, we are {}, server is {}'.format(
-                    '.'.join(self.protocol_version),
-                    '.'.join((
-                        frame.payload.protocol_major,
-                        frame.payload.protocol_minor,
-                        frame.payload.protocol_revision,
-                    )),
-                )
-            )
-        received_methods = []
-        for frame in frames:
+
+        self._inbound_buffer += data
+        if self._inbound_buffer[0] == b'A':
+            self._parse_protocol_header()
+
+        frame_chunks = self._inbound_buffer.split(b'\xCE')
+        self._inbound_buffer = frame_chunks.pop(-1)
+
+        frames = [Reader(chunk).read_frame() for chunk in frame_chunks]
+
+        received_methods = defaultdict(list)
+        for channel_id, frame_type, payload in frames:
             # pylint: disable=protected-access
-            channel = self.channels[frame.channel_id]
-            if frame.frame_type == 'method':
-                received_methods.extend(
-                    channel._handle_method(frame.payload)
+            channel = self.channels[channel_id]
+            if frame_type == 'method':
+                received_methods[channel_id].extend(
+                    channel._handle_method(payload)
                 )
-            elif frame.frame_type == 'content_header':
-                received_methods.extend(
-                    channel._handle_content_header(frame.payload)
+            elif frame_type == 'content_header':
+                received_methods[channel_id].extend(
+                    channel._handle_content_header(payload)
                 )
-            elif frame.frame_type == 'content_body':
-                received_methods.extend(
-                    channel._handle_content_body(frame.payload)
+            elif frame_type == 'content_body':
+                received_methods[channel_id].extend(
+                    channel._handle_content_body(payload)
                 )
-            elif frame.frame_type == 'heartbeat':
+            elif frame_type == 'heartbeat':
                 pass
         return received_methods
 
@@ -153,13 +150,7 @@ class Connection(BaseChannel):
         """Initiate connection with the server."""
         # pylint: disable=unsubscriptable-object
         self.state = 'opening'
-        ProtocolHeader.build_stream({
-            'payload': {
-                'protocol_major': self.protocol_version[0],
-                'protocol_minor': self.protocol_version[1],
-                'protocol_revision': self.protocol_version[2],
-            }
-        }, self._outbound_buffer)
+        self._outbound_buffer.write_protocol_header(*self.protocol_version)
 
     def _handle_connection_start(self, method):
         self.server_settings.properties = method.server_properties
@@ -240,8 +231,4 @@ class Connection(BaseChannel):
             raise replies.ConnectionForced(
                 f'missed heartbeats from server, timeout: {timeout}s'
             )
-        Frame.build_stream({
-            'frame_type': 'heartbeat',
-            'channel_id': self.channel_id,
-            'payload': None,
-        }, self._outbound_buffer)
+        self._outbound_buffer.write_frame_heartbeat(self.channel_id)

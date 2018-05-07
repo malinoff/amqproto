@@ -5,19 +5,26 @@ amqproto.sasl
 AMQP SASL protocols.
 """
 
-from . import domains as d
+from io import BytesIO
+
+from .serialization import Writer
 
 
 class SASL:
-    """Base class for SASL protocols."""
+    """
+    Base class for SASL protocols.
+    """
     mechanism = None
 
     def to_bytes(self):
-        """Serialize the authentication payload to bytes."""
+        """
+        Serialize the authentication payload to bytes.
+        """
         raise NotImplementedError
 
     def handle_challenge(self, challenge: bytes) -> bytes:
-        """This method is called when a challenge from a peer is received
+        """
+        This method is called when a challenge from a peer is received
         during :class:`~amqproto.protocol.methods.ConnectionSecure`.
         Returned bytes are sent as a response.
         """
@@ -25,7 +32,8 @@ class SASL:
 
 
 class PLAIN(SASL):
-    """SASL PLAIN authentication. This is enabled by default in the RabbitMQ
+    """
+    SASL PLAIN authentication. This is enabled by default in the RabbitMQ
     server and clients, and is the default for most other clients.
     """
     mechanism = 'PLAIN'
@@ -42,13 +50,12 @@ class PLAIN(SASL):
 
     def __repr__(self):
         # Do not leak password via repr
-        return '<PLAIN username={} password=***>'.format(
-            self.username.decode('utf-8')
-        )
+        return '<PLAIN username={} password=***>'.format(self.username)
 
 
 class AMQPLAIN(SASL):
-    """Non-standard version of PLAIN as defined by the AMQP 0-8 specification.
+    """
+    Non-standard version of PLAIN as defined by the AMQP 0-8 specification.
     This is enabled by default in the RabbitMQ server, and is the default for
     QPid's Python client.
     """
@@ -59,10 +66,13 @@ class AMQPLAIN(SASL):
         self.password = password
 
     def to_bytes(self):
-        return d.Table.build({
+        stream = BytesIO()
+        writer = Writer(stream)
+        writer.write_table({
             'LOGIN': self.username,
             'PASSWORD': self.password
         })
+        return stream.getvalue()
 
     def handle_challenge(self, challenge: bytes) -> bytes:
         raise RuntimeError('AMQPLAIN SASL method does not support challenging')

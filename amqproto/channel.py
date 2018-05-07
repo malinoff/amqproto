@@ -17,10 +17,16 @@ import attr
 
 from . import methods
 from . import replies
-from .frames import Frame
-from .utils import chunker
 from .settings import Settings
 from .content import BasicContent
+from .serialization import Writer
+
+
+def chunker(iterable, n):  # pylint: disable=invalid-name
+    """Group data into n-sized chunks or blocks."""
+    # chunker('ABCDEFG', 3) --> ['ABC', 'DEF', 'G']
+    for idx in range(0, len(iterable), n):
+        yield iterable[idx:idx+n]
 
 
 @attr.s()
@@ -48,7 +54,7 @@ class BaseChannel:
 
     def __attrs_post_init__(self):
         # The buffer to accumulate all bytes required to be sent.
-        self._outbound_buffer = io.BytesIO()
+        self._outbound_buffer = Writer()
         # Reference to the last received method waiting for its content.
         self._content_waiter = None
 
@@ -105,7 +111,7 @@ class BaseChannel:
             return [waiter]
         return []
 
-    def _prepare_for_sending(self, method):
+    def _prepare_for_sending(self, method, content=None):
         """Prepare the method for sending (including the content,
         if there is one).
         """
@@ -114,8 +120,8 @@ class BaseChannel:
             self._prepare_method_for_sending(method)
             if not method.followed_by_content:
                 return
-            self._prepare_content_header_for_sending(method.content)
-            self._prepare_content_body_for_sending(method.content)
+            self._prepare_content_header_for_sending(content)
+            self._prepare_content_body_for_sending(content)
         except Exception:
             # If the building fails, some bytes may be still written.
             # Let's get rid of them.
@@ -782,7 +788,8 @@ class Channel(BaseChannel):
         return self._prepare_for_sending(method)
 
     def _handle_basic_nack(self, method):
-        self._nacked_messages.append(method.content)
+        # TODO
+        self._nacked_messages.append(method.delivery_tag)
 
     def tx_select(self):
         """This method sets the channel to use standard transactions.
