@@ -15,12 +15,15 @@ class Method:
     BY_ID = {}
 
     @classmethod
-    def register(cls, spec, class_id, method_id, response_to=None,
-                 followed_by_content=False, closing=False):
+    def register(cls, spec, class_id, method_id,
+                 response_to=None, closing=False):
         def decorator(method):
             method.spec = spec
             method.closing = closing
-            method.followed_by_content = followed_by_content
+            fields = attr.fields_dict(method)
+            method.followed_by_content = 'content' in fields
+            method._field_names = fields.keys()
+
             method.responses = set()
             method.response_to = response_to
             if response_to is not None:
@@ -43,19 +46,21 @@ class Method:
             class_id = reader.read_short()
             method_id = reader.read_short()
             return cls.BY_ID[(class_id, method_id)].read(reader)
-        return cls(*load(cls.spec, reader))
+        return cls(*reader.load(cls.spec))
 
     def write(self, writer):
         writer.write_short(self.class_id)
         writer.write_short(self.method_id)
-        dump(self.spec, writer, attr.astuple(self))
+        fields = [getattr(self, field) for field in self._field_names
+                  if field != 'content']
+        writer.dump(self.spec, *fields)
 
 
 @Method.register(spec='BBTSS', class_id=10, method_id=10)
 @attr.s(slots=True)
 class ConnectionStart(Method):
-    version_major: int = attr.ib(default=0, init=False)
-    version_minor: int = attr.ib(default=9, init=False)
+    version_major: int = attr.ib(default=0)
+    version_minor: int = attr.ib(default=9)
     server_properties: dict = attr.ib(default=attr.Factory(dict))
     mechanisms: list = attr.ib(default=attr.Factory(lambda: ['PLAIN']))
     locales: list = attr.ib(default=attr.Factory(lambda: ['EN_US']))
@@ -106,9 +111,9 @@ class ConnectionTuneOK(Method):
 class ConnectionOpen(Method):
     virtual_host: str = attr.ib()
     # Deprecated
-    capabilities: str = attr.ib(default='', init=False, repr=False)
+    capabilities: str = attr.ib(default='', repr=False)
     # Deprecated
-    insist: bool = attr.ib(default=False, init=False, repr=False)
+    insist: bool = attr.ib(default=False, repr=False)
 
 
 @Method.register(spec='s', class_id=10, method_id=41,
@@ -116,7 +121,7 @@ class ConnectionOpen(Method):
 @attr.s(slots=True)
 class ConnectionOpenOK(Method):
     # Deprecated
-    known_hosts: str = attr.ib(default='', init=False, repr=False)
+    known_hosts: str = attr.ib(default='', repr=False)
 
 
 @Method.register(spec='HsHH', class_id=10, method_id=50, closing=True)
@@ -139,7 +144,7 @@ class ConnectionCloseOK(Method):
 @attr.s(slots=True)
 class ChannelOpen(Method):
     # Deprecated
-    out_of_band: str = attr.ib(default='', init=False, repr=False)
+    out_of_band: str = attr.ib(default='', repr=False)
 
 
 @Method.register(spec='L', class_id=20, method_id=11,
@@ -147,7 +152,7 @@ class ChannelOpen(Method):
 @attr.s(slots=True)
 class ChannelOpenOK(Method):
     # Deprecated
-    channel_id: str = attr.ib(default='', init=False, repr=False)
+    channel_id: str = attr.ib(default='', repr=False)
 
 
 @Method.register(spec='?', class_id=20, method_id=20)
@@ -183,7 +188,7 @@ class ChannelCloseOK(Method):
 @attr.s(slots=True)
 class ExchangeDeclare(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     exchange: str = attr.ib()
     type: str = attr.ib()
     passive: bool = attr.ib()
@@ -205,7 +210,7 @@ class ExchangeDeclareOK(Method):
 @attr.s(slots=True)
 class ExchangeDelete(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     exchange: str = attr.ib()
     if_unused: bool = attr.ib()  # noqa: E701
     no_wait: bool = attr.ib()
@@ -222,7 +227,7 @@ class ExchangeDeleteOK(Method):
 @attr.s(slots=True)
 class ExchangeBind(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     destination: str = attr.ib()
     source: str = attr.ib()
     routing_key: str = attr.ib()
@@ -241,7 +246,7 @@ class ExchangeBindOK(Method):
 @attr.s(slots=True)
 class ExchangeUnbind(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     destination: str = attr.ib()
     source: str = attr.ib()
     routing_key: str = attr.ib()
@@ -260,7 +265,7 @@ class ExchangeUnbindOK(Method):
 @attr.s(slots=True)
 class QueueDeclare(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     queue: str = attr.ib()
     passive: bool = attr.ib()
     durable: bool = attr.ib()
@@ -283,7 +288,7 @@ class QueueDeclareOK(Method):
 @attr.s(slots=True)
 class QueueBind(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     queue: str = attr.ib()
     exchange: str = attr.ib()
     routing_key: str = attr.ib()
@@ -302,7 +307,7 @@ class QueueBindOK(Method):
 @attr.s(slots=True)
 class QueueUnbind(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     queue: str = attr.ib()
     exchange: str = attr.ib()
     routing_key: str = attr.ib()
@@ -320,7 +325,7 @@ class QueueUnbindOK(Method):
 @attr.s(slots=True)
 class QueuePurge(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     queue: str = attr.ib()
     no_wait: bool = attr.ib()
 
@@ -336,7 +341,7 @@ class QueuePurgeOK(Method):
 @attr.s(slots=True)
 class QueueDelete(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     queue: str = attr.ib()
     if_unused: bool = attr.ib()  # noqa: E701
     if_empty: bool = attr.ib()  # noqa: E701
@@ -369,7 +374,7 @@ class BasicQosOK(Method):
 @attr.s(slots=True)
 class BasicConsume(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     queue: str = attr.ib()
     consumer_tag: str = attr.ib()
     no_local: bool = attr.ib()
@@ -400,20 +405,20 @@ class BasicCancelOK(Method):
     consumer_tag: str = attr.ib()
 
 
-@Method.register(spec='Hss??', class_id=60, method_id=40,
-                 followed_by_content=True)
+@Method.register(spec='Hss??', class_id=60, method_id=40)
 @attr.s(slots=True)
 class BasicPublish(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     exchange: str = attr.ib()
     routing_key: str = attr.ib()
     mandatory: bool = attr.ib()
     immediate: bool = attr.ib()
 
+    content = attr.ib(default=None)
 
-@Method.register(spec='Hsss', class_id=60, method_id=50,
-                 followed_by_content=True)
+
+@Method.register(spec='Hsss', class_id=60, method_id=50)
 @attr.s(slots=True)
 class BasicReturn(Method):
     reply_code: int = attr.ib()
@@ -421,9 +426,10 @@ class BasicReturn(Method):
     exchange: str = attr.ib()
     routing_key: str = attr.ib()
 
+    content = attr.ib(default=None)
 
-@Method.register(spec='sQ?ss', class_id=60, method_id=60,
-                 followed_by_content=True)
+
+@Method.register(spec='sQ?ss', class_id=60, method_id=60)
 @attr.s(slots=True)
 class BasicDeliver(Method):
     consumer_tag: str = attr.ib()
@@ -432,18 +438,19 @@ class BasicDeliver(Method):
     exchange: str = attr.ib()
     routing_key: str = attr.ib()
 
+    content = attr.ib(default=None)
+
 
 @Method.register(spec='Hs?', class_id=60, method_id=70)
 @attr.s(slots=True)
 class BasicGet(Method):
     # Deprecated
-    ticket: int = attr.ib(default=0, init=False, repr=False)
+    ticket: int = attr.ib(repr=False)
     queue: str = attr.ib()
     no_ack: bool = attr.ib()
 
 
-@Method.register(spec='Q?ssL', class_id=60, method_id=71,
-                 response_to=BasicGet, followed_by_content=True)
+@Method.register(spec='Q?ssL', class_id=60, method_id=71, response_to=BasicGet)
 @attr.s(slots=True)
 class BasicGetOK(Method):
     delivery_tag: int = attr.ib()
@@ -452,13 +459,15 @@ class BasicGetOK(Method):
     routing_key: str = attr.ib()
     message_count: int = attr.ib()
 
+    content = attr.ib(default=None)
+
 
 @Method.register(spec='s', class_id=60, method_id=72,
                  response_to=BasicGet)
 @attr.s(slots=True)
 class BasicGetEmpty(Method):
     # Deprecated
-    cluster_id: str = attr.ib(default='', init=False, repr=False)
+    cluster_id: str = attr.ib(default='', repr=False)
 
 
 @Method.register(spec='Q?', class_id=60, method_id=80)
@@ -552,6 +561,3 @@ class ConfirmSelect(Method):
 @attr.s(slots=True)
 class ConfirmSelectOK(Method):
     pass
-
-
-from .serialization import load, dump  # noqa: E402

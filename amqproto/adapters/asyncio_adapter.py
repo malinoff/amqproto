@@ -1,10 +1,10 @@
 import logging
 import asyncio
 
-from .. import methods
 from ..connection import Connection
 from ..channel import Channel, BaseChannel
 from ..replies import Reply, AsynchronousReply, InternalError
+from ..methods import BasicDeliver, BasicReturn, ChannelClose, ConnectionClose
 
 
 class AsyncioBaseChannel(BaseChannel):
@@ -74,10 +74,8 @@ class AsyncioBaseChannel(BaseChannel):
             fut = handler(method)
             if fut is not None:
                 await fut
-        if isinstance(method, (methods.BasicDeliver,
-                               methods.BasicReturn,
-                               methods.ChannelClose,
-                               methods.ConnectionClose)):
+        if isinstance(method, (BasicDeliver, BasicReturn,
+                               ChannelClose, ConnectionClose)):
             # These methods have their own special handling
             return
         if method.has_response():
@@ -93,14 +91,15 @@ class AsyncioBaseChannel(BaseChannel):
         return self
 
     async def __aexit__(self, exc_type, exc, traceback):
-        if exc is not None:
-            if not isinstance(exc, Reply):
-                exc = InternalError(reply_text=repr(exc))
-            await self.close(
-                exc.reply_code, exc.reply_text, exc.class_id, exc.method_id,
-            )
-        else:
-            await self.close()
+        #if exc is not None:
+        #    if not isinstance(exc, Reply):
+        #        exc = InternalError(reply_text=repr(exc))
+        #    await self.close(
+        #        exc.reply_code, exc.reply_text, exc.class_id, exc.method_id,
+        #    )
+        #else:
+        #    await self.close()
+        await self.close()
 
 
 class AsyncioChannel(AsyncioBaseChannel, Channel):
@@ -109,8 +108,8 @@ class AsyncioChannel(AsyncioBaseChannel, Channel):
         super().__init__(*args, **kwargs)
         self._delivered_messages = asyncio.Queue()
         self._method_handlers.update({
-            methods.BasicReturn: self._handle_basic_return,
-            methods.BasicDeliver: self._handle_basic_deliver,
+            BasicReturn: self._handle_basic_return,
+            BasicDeliver: self._handle_basic_deliver,
         })
 
     async def open(self):
@@ -234,9 +233,10 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
             data = await self._reader.read(frame_max)
             if not data:
                 break  # XXX how to handle this properly?
-            for method in self.parse_data(data):
-                channel = self.channels[method.channel_id]
-                await channel._receive_method(method)
+            for channel_id, methods in self.parse_data(data).items():
+                channel = self.channels[channel_id]
+                for method in methods:
+                    await channel._receive_method(method)
 
 
 # Copy-pasted from https://github.com/python/asyncio/pull/465

@@ -8,7 +8,6 @@ AMQP channels.
 # Pylint can't handle attrs magic.
 # pylint: disable=attribute-defined-outside-init,no-member
 
-import io
 import uuid
 import warnings
 from collections import deque
@@ -20,13 +19,6 @@ from . import replies
 from .settings import Settings
 from .content import BasicContent
 from .serialization import Writer
-
-
-def chunker(iterable, n):  # pylint: disable=invalid-name
-    """Group data into n-sized chunks or blocks."""
-    # chunker('ABCDEFG', 3) --> ['ABC', 'DEF', 'G']
-    for idx in range(0, len(iterable), n):
-        yield iterable[idx:idx+n]
 
 
 @attr.s()
@@ -59,7 +51,8 @@ class BaseChannel:
         self._content_waiter = None
 
     def capable_of(self, method: methods.Method, capability: str):
-        """Check if the server is capable of the method.
+        """
+        Check if the server is capable of the method.
         Can be used to prevent client implementations from sending
         unsupported methods.
         """
@@ -71,18 +64,19 @@ class BaseChannel:
             )
 
     def data_to_send(self) -> bytes:
-        """Returns some data to send."""
+        """
+        Returns the data to send.
+        """
         data = self._outbound_buffer.getvalue()
         if data:
             # Avoid unnecessary reallocations if there is nothing to send
-            self._outbound_buffer = io.BytesIO()
+            self._outbound_buffer = Writer()
         return data
 
     def _handle_method(self, method):
         # We assume that the server won't send us methods we don't explicitly
         # declare as supported via client properties, so there's no
         # additional check here.
-        method.channel_id = self.channel_id
         to_return = []
         if self._content_waiter is not None:
             # The server decided to stop sending the content
@@ -111,51 +105,17 @@ class BaseChannel:
             return [waiter]
         return []
 
-    def _prepare_for_sending(self, method, content=None):
+    def _prepare_for_sending(self, method):
         """Prepare the method for sending (including the content,
         if there is one).
         """
-        orig_pos = self._outbound_buffer.tell()
-        try:
-            self._prepare_method_for_sending(method)
-            if not method.followed_by_content:
-                return
-            self._prepare_content_header_for_sending(content)
-            self._prepare_content_body_for_sending(content)
-        except Exception:
-            # If the building fails, some bytes may be still written.
-            # Let's get rid of them.
-            self._outbound_buffer.seek(orig_pos)
-            self._outbound_buffer.truncate()
-            raise
-
-    def _prepare_method_for_sending(self, method):
-        Frame.build_stream({
-            'frame_type': 'method',
-            'channel_id': self.channel_id,
-            'payload': method,
-        }, self._outbound_buffer)
-
-    def _prepare_content_header_for_sending(self, content):
-        Frame.build_stream({
-            'frame_type': 'content_header',
-            'channel_id': self.channel_id,
-            'payload': content,
-        }, self._outbound_buffer)
-
-    def _prepare_content_body_for_sending(self, content):
-        # 8 is the frame metadata size:
-        # frame_type is UnsignedByte (1),
-        # channel_id is UnsignedShort (1 + 2)
-        # payload length is UnsignedLong (3 + 4)
-        # frame_end is UnsignedByte (7 + 1)
+        self._outbound_buffer.write_frame_method(self.channel_id, method)
+        if not method.followed_by_content:
+            return
         max_frame_size = self.negotiated_settings.frame_max - 8
-        for chunk in chunker(content.body, max_frame_size):
-            Frame.build_stream({
-                'frame_type': 'content_body',
-                'channel_id': self.channel_id,
-                'payload': chunk,
-            }, self._outbound_buffer)
+        self._outbound_buffer.write_frame_content(
+            self.channel_id, method.content, max_frame_size,
+        )
 
 
 @attr.s()
@@ -288,8 +248,8 @@ class Channel(BaseChannel):
             implementation.
         """
         method = methods.ExchangeDeclare(
-            exchange, type, passive, durable, auto_delete,
-            internal, no_wait, arguments,
+            0, exchange, type, passive, durable, auto_delete,
+            internal, no_wait, arguments or {},
         )
         return self._prepare_for_sending(method)
 
@@ -308,7 +268,7 @@ class Channel(BaseChannel):
             If the server could not complete the method it will raise
             a channel or connection exception.
         """
-        method = methods.ExchangeDelete(exchange, if_unused, no_wait)
+        method = methods.ExchangeDelete(0, exchange, if_unused, no_wait)
         return self._prepare_for_sending(method)
 
     def exchange_bind(self, source, destination, routing_key='',
@@ -334,7 +294,7 @@ class Channel(BaseChannel):
         """
         self.capable_of(methods.ExchangeBind, 'exchange_exchange_bindings')
         method = methods.ExchangeBind(
-            destination, source, routing_key, no_wait, arguments,
+            0, destination, source, routing_key, no_wait, arguments or {},
         )
         return self._prepare_for_sending(method)
 
@@ -357,7 +317,7 @@ class Channel(BaseChannel):
         """
         self.capable_of(methods.ExchangeUnbind, 'exchange_exchange_bindings')
         method = methods.ExchangeUnbind(
-            destination, source, routing_key, no_wait, arguments,
+            0, destination, source, routing_key, no_wait, arguments or {},
         )
         return self._prepare_for_sending(method)
 
@@ -406,7 +366,8 @@ class Channel(BaseChannel):
             implementation.
         """
         method = methods.QueueDeclare(
-            queue, passive, durable, exclusive, auto_delete, no_wait, arguments
+            0, queue, passive, durable, exclusive, auto_delete,
+            no_wait, arguments or {},
         )
         return self._prepare_for_sending(method)
 
@@ -443,7 +404,7 @@ class Channel(BaseChannel):
             implementation.
         """
         method = methods.QueueBind(
-            queue, exchange, routing_key, no_wait, arguments,
+            0, queue, exchange, routing_key, no_wait, arguments or {},
         )
         return self._prepare_for_sending(method)
 
@@ -458,7 +419,9 @@ class Channel(BaseChannel):
 
         :param arguments: Specifies the arguments of the binding to unbind.
         """
-        method = methods.QueueUnbind(queue, exchange, routing_key, arguments)
+        method = methods.QueueUnbind(
+            0, queue, exchange, routing_key, arguments or {},
+        )
         return self._prepare_for_sending(method)
 
     def queue_purge(self, queue, no_wait=False):
@@ -471,7 +434,7 @@ class Channel(BaseChannel):
             If the server could not complete the method it will raise
             a channel or connection exception.
         """
-        method = methods.QueuePurge(queue, no_wait)
+        method = methods.QueuePurge(0, queue, no_wait)
         return self._prepare_for_sending(method)
 
     def queue_delete(self, queue, if_unused=False, if_empty=False,
@@ -494,7 +457,7 @@ class Channel(BaseChannel):
             If the server could not complete the method it will raise
             a channel or connection exception.
         """
-        method = methods.QueueDelete(queue, if_unused, if_empty, no_wait)
+        method = methods.QueueDelete(0, queue, if_unused, if_empty, no_wait)
         return self._prepare_for_sending(method)
 
     def basic_qos(self, prefetch_size=0, prefetch_count=0, global_=False):
@@ -579,8 +542,8 @@ class Channel(BaseChannel):
         if consumer_tag is None:
             consumer_tag = str(uuid.uuid4())
         method = methods.BasicConsume(
-            queue, consumer_tag, no_local, no_ack,
-            exclusive, no_wait, arguments,
+            0, queue, consumer_tag, no_local, no_ack,
+            exclusive, no_wait, arguments or {},
         )
         if not method.has_response():
             self._consumers.add(consumer_tag)
@@ -662,7 +625,7 @@ class Channel(BaseChannel):
         if isinstance(content, bytes):
             content = BasicContent(body=content, body_size=len(content))
         method = methods.BasicPublish(
-            exchange, routing_key, mandatory, immediate, content
+            0, exchange, routing_key, mandatory, immediate, content
         )
         if self.publisher_confirms_active:
             self._unconfirmed_messages[self._next_delivery_tag] = content
@@ -685,7 +648,7 @@ class Channel(BaseChannel):
             can get lost if a client dies before they are delivered
             to the application.
         """
-        method = methods.BasicGet(queue, no_ack)
+        method = methods.BasicGet(0, queue, no_ack)
         return self._prepare_for_sending(method)
 
     def basic_ack(self, delivery_tag, multiple=False):

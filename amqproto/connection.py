@@ -9,7 +9,6 @@ Sans-I/O implementations of AMQP connections.
 # pylint: disable=attribute-defined-outside-init,no-member,assigning-non-slot
 
 import typing
-import struct
 from collections import defaultdict
 
 import attr
@@ -68,8 +67,7 @@ class Connection(BaseChannel):
         self.channels = {0: self}
         self._next_channel_id = 1
 
-        # The buffer to accumulate received bytes.
-        self._inbound_buffer = bytearray()
+        self._inbound_buffer = Reader()
 
         self._missed_heartbeats = 0
 
@@ -82,35 +80,25 @@ class Connection(BaseChannel):
             methods.ConnectionClose: self._handle_connection_close,
         }
 
-    def _parse_protocol_header(self):
-        if not self._inbound_buffer.startswith(b'AMQP\x00'):
-            raise replies.ConnectionAborted('cannot parse {}'.format(
-                self._inbound_buffer
-            ))
-        server_version = struct.unpack('>BBB', self._inbound_buffer[5:])
-        del self._inbound_buffer[:8]
-        raise replies.ConnectionAborted(
-            'AMQP version mismatch, we are {}, server is {}'.format(
-                '.'.join(self.protocol_version),
-                '.'.join(server_version),
-            )
-        )
-
     def parse_data(self, data: bytes) -> typing.List[methods.Method]:
-        """Parse some bytes (that may be received by an I/O transmission)
+        """
+        Parse some bytes (that may be received by an I/O transmission)
         into list of AMQP frames. This method also handles buffering,
         so it's intended to directly pass bytes received from elsewhere.
         """
         self._missed_heartbeats = 0
 
-        self._inbound_buffer += data
-        if self._inbound_buffer[0] == b'A':
-            self._parse_protocol_header()
+        self._inbound_buffer.feed(data)
+        if data[0] == b'A':
+            server_version = self._inbound_buffer.read_protocol_header()
+            raise replies.ConnectionAborted(
+                'AMQP version mismatch, we are {}, server is {}'.format(
+                    '.'.join(self.protocol_version),
+                    '.'.join(server_version),
+                )
+            )
 
-        frame_chunks = self._inbound_buffer.split(b'\xCE')
-        self._inbound_buffer = frame_chunks.pop(-1)
-
-        frames = [Reader(chunk).read_frame() for chunk in frame_chunks]
+        frames = self._inbound_buffer.read_frames()
 
         received_methods = defaultdict(list)
         for channel_id, frame_type, payload in frames:

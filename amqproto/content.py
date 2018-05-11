@@ -9,8 +9,6 @@ from datetime import datetime
 
 import attr
 
-from .serialization import load, dump
-
 
 class Properties:
     """
@@ -25,6 +23,7 @@ class Properties:
         def decorator(properties):
             properties.spec = spec
             properties.class_id = class_id
+            properties._field_names = attr.fields_dict(properties).keys()
             cls.BY_ID[class_id] = properties
             return properties
         return decorator
@@ -34,29 +33,28 @@ class Properties:
         property_flags = []
         while True:
             flags = bin(reader.read_short())[2:]
-            if flags[0] == '0':
+            property_flags.extend(flag == '1' for flag in flags[:-1])
+            if flags[-1] == '0':
                 break
-            property_flags.extend(flag == '1' for flag in flags[1:])
-        assert len(property_flags) == len(cls.spec)
-        spec = ''.join(
+        spec = [
             char
             for char, present in zip(cls.spec, property_flags)
             if present
-        )
-        return cls(*load(spec, reader))
+        ]
+        return cls(*reader.load(spec))
 
     def write(self, writer):
         # TODO support for the 16th bit set
-        properties = attr.astuple(self)
-        spec = ''.join(
+        properties = [getattr(self, prop) for prop in self._field_names]
+        spec = [
             char
             for char, prop in zip(self.spec, properties)
             if prop is not None
-        )
+        ]
         flags = ''.join('0' if prop is None else '1' for prop in properties)
         flags = int(flags, 2)
         writer.write_short(flags)
-        dump(spec, writer, *properties)
+        writer.dump(spec, *(prop for prop in properties if prop is not None))
 
 
 @attr.s(slots=True)
@@ -67,13 +65,13 @@ class Content:
 
     body: bytes = attr.ib()
     body_size: int = attr.ib()
-    properties: Properties = attr.ib(default=attr.Factory(
-        takes_self=True,
-        factory=lambda self: Properties.BY_ID[self.class_id](),
-    ))
+    properties: Properties = attr.ib(default=None)
     delivery_info = attr.ib(default=None, repr=False, cmp=False, hash=False)
 
     BY_ID = {}
+
+    def __attrs_post_init__(self):
+        self.properties = Properties.BY_ID[self.class_id]()
 
     def complete(self):
         """AMQP allows to break content into multiple chunks for sending.
@@ -92,7 +90,7 @@ class Content:
     @classmethod
     def read(cls, reader):
         class_id = reader.read_short()
-        weight = reader.read_octet()  # noqa: F841
+        weight = reader.read_short()  # noqa: F841
         assert weight == 0
         body_size = reader.read_long_long()
         properties = Properties.BY_ID[class_id].read(reader)
@@ -100,7 +98,7 @@ class Content:
 
     def write(self, writer):
         writer.write_short(self.class_id)
-        writer.write_octet(0)  # weight
+        writer.write_short(0)  # weight
         writer.write_long_long(self.body_size)
         self.properties.write(writer)
 
