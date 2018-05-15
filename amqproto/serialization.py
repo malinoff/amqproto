@@ -20,12 +20,11 @@ def chunker(iterable, n):  # pylint: disable=invalid-name
 
 
 class Reader:
-    __slots__ = ('buffer', '_view', 'offset',
+    __slots__ = ('buffer', 'offset',
                  '_bitcount', '_bits', '_handlers')
 
     def __init__(self):
         self.buffer = bytearray()
-        self._view = memoryview(self.buffer)
         self.offset = 0
 
         self._bitcount = 0
@@ -44,13 +43,11 @@ class Reader:
         }
 
     def feed(self, data):
-        del self._view
         self.buffer += data
-        self._view = memoryview(self.buffer)
 
     def _read(self, fmt):
         size = calcsize(fmt)
-        value = unpack_from(fmt, self._view, self.offset)
+        value = unpack_from(fmt, self.buffer, self.offset)
         self.offset += size
         return value
 
@@ -118,9 +115,7 @@ class Reader:
             except error:
                 self.offset = old
                 break
-        del self._view
         del self.buffer[:self.offset]
-        self._view = memoryview(self.buffer)
         self.offset = 0
 
     def read_frame(self):

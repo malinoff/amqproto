@@ -44,14 +44,14 @@ class Settings:  # pylint: disable=too-few-public-methods
     """
 
     # Either 'client', or 'server', or 'negotiated'
-    type: bool = attr.ib(default='client')
+    type = attr.ib(default='client')
 
-    properties: dict = attr.ib(default=None)
-    locales: str = attr.ib(default='en_US')
-    mechanisms: str = attr.ib(default='')
-    channel_max: int = attr.ib(default=0)
-    frame_max: int = attr.ib(default=0)
-    heartbeat: int = attr.ib(default=60)
+    properties = attr.ib(default=None)
+    locales = attr.ib(default='en_US')
+    mechanisms = attr.ib(default='')
+    channel_max = attr.ib(default=0)
+    frame_max = attr.ib(default=0)
+    heartbeat = attr.ib(default=60)
 
     def __attrs_post_init__(self):
         if self.type == 'client':

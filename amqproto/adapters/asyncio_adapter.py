@@ -9,13 +9,16 @@ from ..methods import BasicDeliver, BasicReturn, ChannelClose, ConnectionClose
 
 class AsyncioBaseChannel(BaseChannel):
 
-    def __init__(self, writer, *args, **kwargs):
+    def __init__(self, writer, write_limit=50, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._writer = writer
         # The server can send us two things: a response to a method or
         # a connection/channel exception.
         self._response = asyncio.Queue(maxsize=1)
         self._exception = asyncio.Queue(maxsize=1)
+
+        self._write_limit = write_limit
+        self._wrote_without_response = 0
 
     async def _prepare_for_sending(self, method):
         # Because of asynchronous nature of AMQP, error handling
@@ -37,8 +40,7 @@ class AsyncioBaseChannel(BaseChannel):
             # the user about the error. Maybe wrapping the exception into a
             # some sort of DelayedError is worth exploring.
             exc = await self._exception.get()
-            exc.asynchronous = True
-            raise exc
+            raise AsynchronousReply(exc)
         logging.info('[channel_id %s] sending %s', self.channel_id, method)
         super()._prepare_for_sending(method)
         self._writer.write(self.data_to_send())
@@ -47,6 +49,20 @@ class AsyncioBaseChannel(BaseChannel):
             # drain for I/O to complete. Possible error handling
             # is deferred to the next await, as described above.
             await self._writer.drain()
+
+            # On a non-paused connection, drain won't yield to the event loop
+            # making it impossible for _communicate to ever run.
+            # We fix this by introducing a limit of writes without
+            # awaiting for a reply (basic_publish case). Once the limit is hit,
+            # we explicitly yield to the event loop via asyncio.sleep(0).
+            #
+            # Yes, we could sleep after every single drain but that is
+            # _very_ inefficient.
+
+            self._wrote_without_response += 1
+            if self._wrote_without_response > self._write_limit:
+                await asyncio.sleep(0)
+                self._wrote_without_response = 0
             return
         # If there is a response, then we can handle possible errors
         # right here, yay!
@@ -55,15 +71,15 @@ class AsyncioBaseChannel(BaseChannel):
             return_when=asyncio.FIRST_COMPLETED,
         )
         # There is a situation when both .get() calls may be done
-        # and that point: a race condition, in which both client and server
-        # close the channel: client - normally, server - via an exception.
+        # at that point: a race condition, in which both client and server
+        # close the channel. Client - normally, server - via an exception.
         # In that case, `pending` is empty.
         for task in pending:
             task.cancel()
         for task in done:
             response = await task
             if isinstance(response, Reply):
-                raise AsynchronousReply(response)
+                raise response
         return response
 
     async def _receive_method(self, method):
@@ -137,6 +153,7 @@ class AsyncioChannel(AsyncioBaseChannel, Channel):
         await self._exception.put(exc)
         self.state = 'closed'
 
+    # XXX invalid syntax in py3.5
     async def delivered_messages(self):
         """Yields delivered messages."""
         while self.state == 'open':
@@ -164,8 +181,8 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
         self._heartbeat_task = None
         self._communicate_task = None
 
-    def Channel(self, *args, **kwargs):
-        return AsyncioChannel(self._writer, *args, **kwargs)
+    def _make_channel(self, channel_id):
+        return AsyncioChannel(self._writer, self._write_limit, channel_id)
 
     async def _handle_connection_tune(self, method):
         loop = asyncio.get_event_loop()

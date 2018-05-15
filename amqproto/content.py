@@ -5,8 +5,6 @@ amqproto.content
 AMQP content.
 """
 
-from datetime import datetime
-
 import attr
 
 
@@ -46,11 +44,9 @@ class Properties:
     def write(self, writer):
         # TODO support for the 16th bit set
         properties = [getattr(self, prop) for prop in self._field_names]
-        spec = [
-            char
-            for char, prop in zip(self.spec, properties)
-            if prop is not None
-        ]
+        spec = [char
+                for char, prop in zip(self.spec, properties)
+                if prop is not None]
         flags = ''.join('0' if prop is None else '1' for prop in properties)
         flags = int(flags, 2)
         writer.write_short(flags)
@@ -63,9 +59,9 @@ class Content:
     Describes an AMQP content.
     """
 
-    body: bytes = attr.ib()
-    body_size: int = attr.ib()
-    properties: Properties = attr.ib(default=None)
+    body = attr.ib()
+    body_size = attr.ib()
+    properties = attr.ib(default=None)
     delivery_info = attr.ib(default=None, repr=False, cmp=False, hash=False)
 
     BY_ID = {}
@@ -108,21 +104,21 @@ class Content:
 class BasicProperties(Properties):
     """Basic properties."""
 
-    content_type: str = attr.ib(None)
-    content_encoding: str = attr.ib(None)
-    headers: dict = attr.ib(None)
-    delivery_mode: int = attr.ib(None)
-    priority: int = attr.ib(None)
-    correlation_id: str = attr.ib(None)
-    reply_to: str = attr.ib(None)
-    expiration: str = attr.ib(None)
-    message_id: str = attr.ib(None)
-    timestamp: datetime = attr.ib(None)
-    type: str = attr.ib(None)
-    user_id: str = attr.ib(None)
-    app_id: str = attr.ib(None)
+    content_type = attr.ib(None)
+    content_encoding = attr.ib(None)
+    headers = attr.ib(None)
+    delivery_mode = attr.ib(None)
+    priority = attr.ib(None)
+    correlation_id = attr.ib(None)
+    reply_to = attr.ib(None)
+    expiration = attr.ib(None)
+    message_id = attr.ib(None)
+    timestamp = attr.ib(None)
+    type = attr.ib(None)
+    user_id = attr.ib(None)
+    app_id = attr.ib(None)
     # Deprecated
-    cluster_id: str = attr.ib(default=None, init=False, repr=False)
+    cluster_id = attr.ib(default=None, init=False, repr=False)
 
 
 @Content.register(class_id=60)

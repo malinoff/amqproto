@@ -29,19 +29,19 @@ class Connection(BaseChannel):
     :param auth: SASL method to authenticate with the server.
     """
 
-    virtual_host: str = attr.ib(default='/')
+    virtual_host = attr.ib(default='/')
 
-    auth: sasl.SASL = attr.ib(
+    auth = attr.ib(
         default=attr.Factory(lambda: sasl.PLAIN('guest', 'guest')),
     )
 
-    properties: dict = attr.ib(default=None, repr=False, cmp=False, hash=False)
-    locale: str = attr.ib(default='en_US', repr=False, cmp=False, hash=False)
-    channel_max: int = attr.ib(default=0, repr=False, cmp=False, hash=False)
-    frame_max: int = attr.ib(default=0, repr=False, cmp=False, hash=False)
-    heartbeat: int = attr.ib(default=60, repr=False, cmp=False, hash=False)
+    properties = attr.ib(default=None)
+    locale = attr.ib(default='en_US')
+    channel_max = attr.ib(default=0)
+    frame_max = attr.ib(default=0)
+    heartbeat = attr.ib(default=60)
 
-    client_settings: Settings = attr.ib(
+    client_settings = attr.ib(
         default=attr.Factory(
             takes_self=True,
             factory=lambda self: Settings(
@@ -55,8 +55,6 @@ class Connection(BaseChannel):
         ),
         init=False
     )
-
-    Channel = Channel
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
@@ -120,6 +118,9 @@ class Connection(BaseChannel):
                 pass
         return received_methods
 
+    def _make_channel(self, channel_id):
+        return Channel(channel_id)
+
     def get_channel(self, channel_id: int = None) -> Channel:
         """Get a channel by channel_id, or create one."""
         if channel_id is None:
@@ -129,7 +130,7 @@ class Connection(BaseChannel):
             channel = self.channels.get(channel_id)
             if channel is not None:
                 return channel
-        channel = self.channels[channel_id] = self.Channel(channel_id)
+        channel = self.channels[channel_id] = self._make_channel(channel_id)
         channel.server_settings = self.server_settings
         channel.negotiated_settings = self.negotiated_settings
         return channel

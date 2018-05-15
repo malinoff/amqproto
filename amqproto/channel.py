@@ -28,14 +28,14 @@ class BaseChannel:
     shared logic.
     """
 
-    channel_id: int = attr.ib(default=0)
+    channel_id = attr.ib(default=0)
 
-    server_settings: Settings = attr.ib(
+    server_settings = attr.ib(
         default=attr.Factory(lambda: Settings(type='server')),
         init=False,
     )
 
-    negotiated_settings: Settings = attr.ib(
+    negotiated_settings = attr.ib(
         default=attr.Factory(lambda: Settings(type='negotiated')),
         init=False,
     )
@@ -126,9 +126,9 @@ class Channel(BaseChannel):
     :param channel_id: channel id, unique within a single connection.
     """
 
-    flow_active: bool = attr.ib(default=True, init=False)
-    transaction_active: bool = attr.ib(default=False, init=False)
-    publisher_confirms_active: bool = attr.ib(default=False, init=False)
+    flow_active = attr.ib(default=True, init=False)
+    transaction_active = attr.ib(default=False, init=False)
+    publisher_confirms_active = attr.ib(default=False, init=False)
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
