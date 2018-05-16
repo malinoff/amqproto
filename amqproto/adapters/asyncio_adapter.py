@@ -1,6 +1,8 @@
 import logging
 import asyncio
 
+from async_generator import yield_
+
 from ..connection import Connection
 from ..channel import Channel, BaseChannel
 from ..replies import Reply, AsynchronousReply, InternalError
@@ -153,12 +155,11 @@ class AsyncioChannel(AsyncioBaseChannel, Channel):
         await self._exception.put(exc)
         self.state = 'closed'
 
-    # XXX invalid syntax in py3.5
     async def delivered_messages(self):
         """Yields delivered messages."""
         while self.state == 'open':
             message = await self._delivered_messages.get()
-            yield message
+            await yield_(message)
 
 
 class AsyncioConnection(AsyncioBaseChannel, Connection):

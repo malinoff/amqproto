@@ -6,6 +6,8 @@ from struct import pack, unpack_from, error, calcsize
 from .methods import Method
 from .content import Content
 
+__all__ = ['Reader', 'Writer']
+
 FRAME_METHOD = 1
 FRAME_CONTENT_HEADER = 2
 FRAME_CONTENT_BODY = 3
@@ -53,7 +55,7 @@ class Reader:
 
     def read_bit(self) -> bool:
         if not self._bitcount:
-            self._bits = self._read('>B')
+            self._bits = self._read('>B')[0]
         self._bitcount = 8
         value = (self._bits & 1) == 1
         self._bits >>= 1
@@ -131,7 +133,8 @@ class Reader:
             payload = Content.read(self)
         elif frame_type == FRAME_CONTENT_BODY:
             kind = 'content_body'
-            payload = self.read(length)
+            payload = self._read('>%s' % length)
+            print(payload)
         elif frame_type == FRAME_HEARTBEAT:
             kind = 'heartbeat'
         end = self._read('>c')[0]
