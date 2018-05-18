@@ -9,6 +9,7 @@ Sans-I/O implementations of AMQP connections.
 # pylint: disable=attribute-defined-outside-init,no-member,assigning-non-slot
 
 import typing
+from io import BytesIO
 from collections import defaultdict
 
 import attr
@@ -17,8 +18,11 @@ from . import sasl
 from . import replies
 from . import methods
 from .settings import Settings
-from .serialization import Reader
 from .channel import BaseChannel, Channel
+from .serialization import (
+    parse_protocol_header, parse_frames,
+    dump_protocol_header, dump_frame_heartbeat,
+)
 
 
 @attr.s()
@@ -65,7 +69,7 @@ class Connection(BaseChannel):
         self.channels = {0: self}
         self._next_channel_id = 1
 
-        self._inbound_buffer = Reader()
+        self._inbound_buffer = BytesIO()
 
         self._missed_heartbeats = 0
 
@@ -86,9 +90,12 @@ class Connection(BaseChannel):
         """
         self._missed_heartbeats = 0
 
-        self._inbound_buffer.feed(data)
+        old = self._inbound_buffer.tell()
+        self._inbound_buffer.write(data)
+        self._inbound_buffer.seek(old)
+
         if data[0] == b'A':
-            server_version = self._inbound_buffer.read_protocol_header()
+            server_version = parse_protocol_header(self._inbound_buffer)
             raise replies.ConnectionAborted(
                 'AMQP version mismatch, we are {}, server is {}'.format(
                     '.'.join(self.protocol_version),
@@ -96,9 +103,8 @@ class Connection(BaseChannel):
                 )
             )
 
-        frames = self._inbound_buffer.read_frames()
-
         received_methods = defaultdict(list)
+        frames = parse_frames(self._inbound_buffer)
         for channel_id, frame_type, payload in frames:
             # pylint: disable=protected-access
             channel = self.channels[channel_id]
@@ -116,6 +122,7 @@ class Connection(BaseChannel):
                 )
             elif frame_type == 'heartbeat':
                 pass
+        self._inbound_buffer = BytesIO(self._inbound_buffer.read())
         return received_methods
 
     def _make_channel(self, channel_id):
@@ -139,7 +146,9 @@ class Connection(BaseChannel):
         """Initiate connection with the server."""
         # pylint: disable=unsubscriptable-object
         self.state = 'opening'
-        self._outbound_buffer.write_protocol_header(*self.protocol_version)
+        self._outbound_buffer.write(
+            dump_protocol_header(*self.protocol_version)
+        )
 
     def _handle_connection_start(self, method):
         self.server_settings.properties = method.server_properties
@@ -220,4 +229,6 @@ class Connection(BaseChannel):
             raise replies.ConnectionForced(
                 f'missed heartbeats from server, timeout: {timeout}s'
             )
-        self._outbound_buffer.write_frame_heartbeat(self.channel_id)
+        self._outbound_buffer.write(
+            dump_frame_heartbeat(self.channel_id)
+        )

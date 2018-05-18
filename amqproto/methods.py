@@ -20,9 +20,9 @@ class Method:
         def decorator(method):
             method.spec = spec
             method.closing = closing
-            fields = attr.fields_dict(method)
+            fields = [field.name for field in attr.fields(method)]
             method.followed_by_content = 'content' in fields
-            method._field_names = fields.keys()
+            method._field_names = fields
 
             method.responses = set()
             method.response_to = response_to
@@ -41,19 +41,16 @@ class Method:
         return self.responses and not getattr(self, 'no_wait', False)
 
     @classmethod
-    def read(cls, reader):
+    def load(cls, stream):
         if cls is Method:
-            class_id = reader.read_short()
-            method_id = reader.read_short()
-            return cls.BY_ID[(class_id, method_id)].read(reader)
-        return cls(*reader.load(cls.spec))
+            class_id, method_id = load('HH', stream)
+            return cls.BY_ID[(class_id, method_id)].load(stream)
+        return cls(*load(cls.spec, stream))
 
-    def write(self, writer):
-        writer.write_short(self.class_id)
-        writer.write_short(self.method_id)
+    def dump(self):
         fields = [getattr(self, field) for field in self._field_names
                   if field != 'content']
-        writer.dump(self.spec, *fields)
+        return dump('HH' + self.spec, self.class_id, self.method_id, *fields)
 
 
 @Method.register(spec='BBTSS', class_id=10, method_id=10)
@@ -561,3 +558,6 @@ class ConfirmSelect(Method):
 @attr.s(slots=True)
 class ConfirmSelectOK(Method):
     pass
+
+
+from .serialization import load, dump

@@ -5,9 +5,7 @@ amqproto.sasl
 AMQP SASL protocols.
 """
 
-from io import BytesIO
-
-from .serialization import Writer
+from .serialization import dump
 
 
 class SASL:
@@ -66,13 +64,7 @@ class AMQPLAIN(SASL):
         self.password = password
 
     def to_bytes(self):
-        stream = BytesIO()
-        writer = Writer(stream)
-        writer.write_table({
-            'LOGIN': self.username,
-            'PASSWORD': self.password
-        })
-        return stream.getvalue()
+        return dump('T', {'LOGIN': self.username, 'PASSWORD': self.password})
 
     def handle_challenge(self, challenge: bytes) -> bytes:
         raise RuntimeError('AMQPLAIN SASL method does not support challenging')

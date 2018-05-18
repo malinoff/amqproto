@@ -10,6 +10,7 @@ AMQP channels.
 
 import uuid
 import warnings
+from io import BytesIO
 from collections import deque
 
 import attr
@@ -18,7 +19,7 @@ from . import methods
 from . import replies
 from .settings import Settings
 from .content import BasicContent
-from .serialization import Writer
+from .serialization import dump_frame_method, dump_frame_content
 
 
 @attr.s()
@@ -46,7 +47,7 @@ class BaseChannel:
 
     def __attrs_post_init__(self):
         # The buffer to accumulate all bytes required to be sent.
-        self._outbound_buffer = Writer()
+        self._outbound_buffer = BytesIO()
         # Reference to the last received method waiting for its content.
         self._content_waiter = None
 
@@ -70,7 +71,7 @@ class BaseChannel:
         data = self._outbound_buffer.getvalue()
         if data:
             # Avoid unnecessary reallocations if there is nothing to send
-            self._outbound_buffer = Writer()
+            self._outbound_buffer = BytesIO()
         return data
 
     def _handle_method(self, method):
@@ -106,15 +107,18 @@ class BaseChannel:
         return []
 
     def _prepare_for_sending(self, method):
-        """Prepare the method for sending (including the content,
+        """
+        Prepare the method for sending (including the content,
         if there is one).
         """
-        self._outbound_buffer.write_frame_method(self.channel_id, method)
+        self._outbound_buffer.write(
+            dump_frame_method(self.channel_id, method)
+        )
         if not method.followed_by_content:
             return
         max_frame_size = self.negotiated_settings.frame_max - 8
-        self._outbound_buffer.write_frame_content(
-            self.channel_id, method.content, max_frame_size,
+        self._outbound_buffer.write(
+            dump_frame_content(self.channel_id, method.content, max_frame_size)
         )
 
 

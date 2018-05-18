@@ -7,6 +7,8 @@ AMQP content.
 
 import attr
 
+from .serialization import load, dump
+
 
 class Properties:
     """
@@ -27,10 +29,10 @@ class Properties:
         return decorator
 
     @classmethod
-    def read(cls, reader):
+    def load(cls, stream):
         property_flags = []
         while True:
-            flags = bin(reader.read_short())[2:]
+            flags = bin(load('H', stream))[2:]
             property_flags.extend(flag == '1' for flag in flags[:-1])
             if flags[-1] == '0':
                 break
@@ -39,18 +41,22 @@ class Properties:
             for char, present in zip(cls.spec, property_flags)
             if present
         ]
-        return cls(*reader.load(spec))
+        return cls(*load(spec, stream))
 
-    def write(self, writer):
+    def dump(self):
         # TODO support for the 16th bit set
-        properties = [getattr(self, prop) for prop in self._field_names]
-        spec = [char
-                for char, prop in zip(self.spec, properties)
-                if prop is not None]
-        flags = ''.join('0' if prop is None else '1' for prop in properties)
-        flags = int(flags, 2)
-        writer.write_short(flags)
-        writer.dump(spec, *(prop for prop in properties if prop is not None))
+        spec = ['H']
+        flags = 0
+        props = []
+        for idx, (char, prop_name) in enumerate(
+                zip(self.spec, self._field_names)):
+            prop = getattr(self, prop_name)
+            if prop is not None:
+                spec.append(char)
+                props.append(prop)
+                flags |= 1 << (15 - idx)
+
+        return dump(spec, flags, *props)
 
 
 @attr.s(slots=True)
@@ -84,19 +90,16 @@ class Content:
         return decorator
 
     @classmethod
-    def read(cls, reader):
-        class_id = reader.read_short()
-        weight = reader.read_short()  # noqa: F841
+    def load(cls, stream):
+        class_id, weight, body_size = load('HHQ', stream)
         assert weight == 0
-        body_size = reader.read_long_long()
-        properties = Properties.BY_ID[class_id].read(reader)
+        properties = Properties.BY_ID[class_id].load(stream)
         return cls.BY_ID[class_id](b'', body_size, properties)
 
-    def write(self, writer):
-        writer.write_short(self.class_id)
-        writer.write_short(0)  # weight
-        writer.write_long_long(self.body_size)
-        self.properties.write(writer)
+    def dump(self):
+        header = dump('HHQ', self.class_id, 0, self.body_size)
+        properties = self.properties.dump()
+        return header + properties
 
 
 @Properties.register(spec='ssTBBsssstssss', class_id=60)
