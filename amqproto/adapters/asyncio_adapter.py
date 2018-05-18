@@ -1,7 +1,7 @@
 import logging
 import asyncio
 
-from async_generator import yield_
+from async_generator import async_generator, yield_
 
 from ..connection import Connection
 from ..channel import Channel, BaseChannel
@@ -155,6 +155,7 @@ class AsyncioChannel(AsyncioBaseChannel, Channel):
         await self._exception.put(exc)
         self.state = 'closed'
 
+    @async_generator
     async def delivered_messages(self):
         """Yields delivered messages."""
         while self.state == 'open':

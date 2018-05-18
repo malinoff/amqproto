@@ -32,7 +32,7 @@ class Properties:
     def load(cls, stream):
         property_flags = []
         while True:
-            flags = bin(load('H', stream))[2:]
+            flags = bin(load('H', stream)[0])[2:]
             property_flags.extend(flag == '1' for flag in flags[:-1])
             if flags[-1] == '0':
                 break

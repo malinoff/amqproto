@@ -69,7 +69,7 @@ class Connection(BaseChannel):
         self.channels = {0: self}
         self._next_channel_id = 1
 
-        self._inbound_buffer = BytesIO()
+        self._inbound_buffer = bytearray()
 
         self._missed_heartbeats = 0
 
@@ -90,12 +90,11 @@ class Connection(BaseChannel):
         """
         self._missed_heartbeats = 0
 
-        old = self._inbound_buffer.tell()
-        self._inbound_buffer.write(data)
-        self._inbound_buffer.seek(old)
+        self._inbound_buffer += data
+        stream = BytesIO(self._inbound_buffer)
 
         if data[0] == b'A':
-            server_version = parse_protocol_header(self._inbound_buffer)
+            server_version = parse_protocol_header(stream)
             raise replies.ConnectionAborted(
                 'AMQP version mismatch, we are {}, server is {}'.format(
                     '.'.join(self.protocol_version),
@@ -104,8 +103,7 @@ class Connection(BaseChannel):
             )
 
         received_methods = defaultdict(list)
-        frames = parse_frames(self._inbound_buffer)
-        for channel_id, frame_type, payload in frames:
+        for channel_id, frame_type, payload in parse_frames(stream):
             # pylint: disable=protected-access
             channel = self.channels[channel_id]
             if frame_type == 'method':
@@ -122,7 +120,7 @@ class Connection(BaseChannel):
                 )
             elif frame_type == 'heartbeat':
                 pass
-        self._inbound_buffer = BytesIO(self._inbound_buffer.read())
+        self._inbound_buffer = bytearray(stream.read())
         return received_methods
 
     def _make_channel(self, channel_id):

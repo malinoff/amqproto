@@ -89,8 +89,11 @@ def _parse_frame(stream):
         payload = stream.read(length)
     elif frame_type == FRAME_HEARTBEAT:
         kind = 'heartbeat'
+    else:
+        raise error('could not parse frame')
     end = stream.read(1)
-    assert end == b'\xCE'
+    if end != b'\xCE':
+        raise error('could not parse frame end')
     return channel_id, kind, payload
 
 
@@ -154,8 +157,9 @@ def dump(fmt, *values):
                 bits.append(0)
             bits[-1] |= (value << shift)
             bitcount += 1
+            continue
         elif bits:
-            data = pack('>%sB' % len(bits), *bits)
+            buf += pack('>%sB' % len(bits), *bits)
             bitcount, bits = 0, []
         if char == 'B':
             data = pack('>B', value)

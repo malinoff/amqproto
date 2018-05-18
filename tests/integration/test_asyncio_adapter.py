@@ -8,20 +8,13 @@ from amqproto.methods import BasicDeliver, BasicReturn
 from amqproto.adapters.asyncio_adapter import AsyncioConnection
 
 
-@pytest.fixture(scope='session')
-def event_loop():
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture(scope='session')
+@pytest.fixture
 async def connection():
     async with AsyncioConnection() as conn:
         yield conn
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture
 async def channel(connection):
     async with connection.get_channel() as chan:
         yield chan
