@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import uuid
 
-from amqproto.protocol import BasicMessage
-from amqproto.io.asyncio import Connection, run
+from async_generator import aclosing
+
+from amqproto import BasicContent, BasicProperties
+from amqproto.adapters.asyncio_adapter import AsyncioConnection, run
 
 
 class FibonacciRpcClient:
@@ -11,7 +13,7 @@ class FibonacciRpcClient:
         self.channel = channel
 
     async def __aenter__(self):
-        self.reply_queue = await self.channel.queue_declare(exclusive=True)
+        self.reply_queue = await self.channel.queue_declare('', exclusive=True)
         await self.channel.basic_consume(self.reply_queue.queue, no_ack=True)
         return self
 
@@ -19,22 +21,25 @@ class FibonacciRpcClient:
         pass
 
     async def call(self, n):
-        correlation_id = str(uuid.uuid4()).encode('utf-8')
-        message = BasicMessage(
-            str(n),
-            reply_to=self.reply_queue.queue,
-            correlation_id=correlation_id,
+        correlation_id = str(uuid.uuid4())
+        message = BasicContent(
+            str(n).encode('utf-8'),
+            properties=BasicProperties(
+                reply_to=self.reply_queue.queue,
+                correlation_id=correlation_id,
+            ),
         )
         await self.channel.basic_publish(
             message, exchange='', routing_key='rpc_queue',
         )
-        async for reply in self.channel.consumed_messages():
-            if correlation_id == reply.correlation_id:
-                return int(reply.decoded_body)
+        async with aclosing(self.channel.delivered_messages()) as messages:
+            async for reply in messages:
+                if correlation_id == reply.correlation_id:
+                    return int(reply.body.decode('utf-8'))
 
 
 async def main():
-    async with Connection(host='localhost') as connection:
+    async with AsyncioConnection(host='localhost') as connection:
         async with connection.get_channel() as channel:
 
             fibonacci_rpc = FibonacciRpcClient(channel)

@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 import sys
 
-from amqproto.io.asyncio import Connection, run
-from amqproto.protocol import BasicMessage, DeliveryMode
+from amqproto.content import BasicContent, BasicProperties
+from amqproto.adapters.asyncio_adapter import AsyncioConnection, run
 
 
 async def main():
-    async with Connection(host='localhost') as connection:
+    async with AsyncioConnection(host='localhost') as connection:
         async with connection.get_channel() as channel:
             await channel.queue_declare('task_queue', durable=True)
 
             body = ' '.join(sys.argv[1:]) or "Hello World!"
-            message = BasicMessage(body, delivery_mode=DeliveryMode.Persistent)
+            properties = BasicProperties(delivery_mode=2)
+            content = BasicContent(body.encode('utf-8'), properties=properties)
             await channel.basic_publish(
-                message,
+                content,
                 exchange='',
                 routing_key='task_queue',
             )
