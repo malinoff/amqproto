@@ -66,13 +66,15 @@ class Content:
     """
 
     body = attr.ib()
-    body_size = attr.ib()
+    body_size = attr.ib(default=None)
     properties = attr.ib(default=None)
     delivery_info = attr.ib(default=None, repr=False, cmp=False, hash=False)
 
     BY_ID = {}
 
     def __attrs_post_init__(self):
+        if self.body_size is None:
+            self.body_size = len(self.body)
         self.properties = Properties.BY_ID[self.class_id]()
 
     def complete(self):

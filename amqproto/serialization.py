@@ -14,13 +14,14 @@ FRAME_CONTENT_BODY = 3
 FRAME_HEARTBEAT = 8
 
 
-def load(fmt, stream: BytesIO):
+def load(fmt: str, stream: BytesIO, _unpack=unpack):
     values = []
     bitcount = bits = 0
+    read = stream.read
     for char in fmt:
         if char == '?':
             if not bitcount:
-                bits = unpack('>B', stream.read(1))[0]
+                bits = _unpack('>B', read(1))[0]
                 bitcount = 8
             value = (bits & 1) == 1
             bits >>= 1
@@ -28,27 +29,27 @@ def load(fmt, stream: BytesIO):
         else:
             bitcount = bits = 0
         if char == 'B':
-            value = unpack('>B', stream.read(1))[0]
+            value = _unpack('>B', read(1))[0]
         elif char == 'H':
-            value = unpack('>H', stream.read(2))[0]
+            value = _unpack('>H', read(2))[0]
         elif char == 'L':
-            value = unpack('>L', stream.read(4))[0]
+            value = _unpack('>L', read(4))[0]
         elif char == 'Q':
-            value = unpack('>Q', stream.read(8))[0]
+            value = _unpack('>Q', read(8))[0]
         elif char == 's':
-            length = unpack('>B', stream.read(1))[0]
-            value = unpack('>%ss' % length, stream.read(length))[0]
+            length = _unpack('>B', read(1))[0]
+            value = _unpack('>%ss' % length, read(length))[0]
             value = value.decode('utf-8', 'surrogatepass')
         elif char == 'S':
-            length = unpack('>L', stream.read(4))[0]
-            value = unpack('>%ss' % length, stream.read(length))[0]
+            length = _unpack('>L', read(4))[0]
+            value = _unpack('>%ss' % length, read(length))[0]
             value = value.decode('utf-8', 'surrogatepass')
         elif char == 't':
-            timestamp = unpack('>Q', stream.read(8))[0]
+            timestamp = _unpack('>Q', read(8))[0]
             value = datetime.utcfromtimestamp(timestamp)
         elif char == 'T':
             value = {}
-            length = unpack('>L', stream.read(4))[0]
+            length = _unpack('>L', read(4))[0]
             start = stream.tell()
             while stream.tell() - start < length:
                 key = load('s', stream)[0]
@@ -97,37 +98,37 @@ def _parse_frame(stream):
     return channel_id, kind, payload
 
 
-def _load_item(stream):
+def _load_item(stream, _unpack=unpack):
     read = stream.read
     kind = read(1)
     if kind == b't':
-        return unpack('>?', read(1))[0]
+        return _unpack('>?', read(1))[0]
     elif kind == b'b':
-        return unpack('>b', read(1))[0]
+        return _unpack('>b', read(1))[0]
     elif kind == b'B':
-        return unpack('>B', read(1))[0]
+        return _unpack('>B', read(1))[0]
     elif kind == b's':
-        return unpack('>h', read(2))[0]
+        return _unpack('>h', read(2))[0]
     elif kind == b'u':
-        return unpack('>H', read(2))[0]
+        return _unpack('>H', read(2))[0]
     elif kind == b'I':
-        return unpack('>l', read(4))[0]
+        return _unpack('>l', read(4))[0]
     elif kind == b'i':
-        return unpack('>L', read(4))[0]
+        return _unpack('>L', read(4))[0]
     elif kind == b'l':
-        return unpack('>q', read(8))[0]
+        return _unpack('>q', read(8))[0]
     elif kind == b'f':
-        return unpack('>f', read(4))[0]
+        return _unpack('>f', read(4))[0]
     elif kind == b'd':
-        return unpack('>d', read(8))[0]
+        return _unpack('>d', read(8))[0]
     elif kind == b'D':
-        exponent, value = unpack('>Bl', read(5))
+        exponent, value = _unpack('>Bl', read(5))
         return Decimal(value) / Decimal(10 ** exponent)
     elif kind == b'S':
         return load('S', stream)[0]
     elif kind == b'A':
         array = []
-        length = unpack('>L', stream.read(4))[0]
+        length = _unpack('>L', stream.read(4))[0]
         start = stream.tell()
         while stream.tell() - start < length:
             array.append(_load_item(stream))
@@ -139,13 +140,13 @@ def _load_item(stream):
     elif kind == b'V':
         return None
     elif kind == b'x':
-        length = unpack('>L', stream.read(4))[0]
-        return stream.read(length)
+        length = _unpack('>L', read(4))[0]
+        return read(length)
     else:
         raise RuntimeError('should not get there', kind)
 
 
-def dump(fmt, *values):
+def dump(fmt, *values, _pack=pack):
     buf = bytearray()
     bitcount, bits = 0, []
     for char, value in zip(fmt, values):
@@ -159,37 +160,37 @@ def dump(fmt, *values):
             bitcount += 1
             continue
         elif bits:
-            buf += pack('>%sB' % len(bits), *bits)
+            buf += _pack('>%sB' % len(bits), *bits)
             bitcount, bits = 0, []
         if char == 'B':
-            data = pack('>B', value)
+            data = _pack('>B', value)
         elif char == 'H':
-            data = pack('>H', value)
+            data = _pack('>H', value)
         elif char == 'L':
-            data = pack('>L', value)
+            data = _pack('>L', value)
         elif char == 'Q':
-            data = pack('>Q', value)
+            data = _pack('>Q', value)
         elif char == 's':
             if isinstance(value, str):
                 value = value.encode('utf-8', 'surrogatepass')
-            data = pack('>B', len(value)) + value
+            data = _pack('>B', len(value)) + value
         elif char == 'S':
             if isinstance(value, str):
                 value = value.encode('utf-8', 'surrogatepass')
-            data = pack('>L', len(value)) + value
+            data = _pack('>L', len(value)) + value
         elif char == 't':
-            data = pack('>Q', timegm(value.utctimetuple()))
+            data = _pack('>Q', timegm(value.utctimetuple()))
         elif char == 'T':
             stream2 = BytesIO()
             for key, val in value.items():
                 stream2.write(dump('s', key) + _dump_item(val))
             payload = stream2.getvalue()
-            data = pack('>L', len(payload)) + payload
+            data = _pack('>L', len(payload)) + payload
         elif char != '?':
             raise RuntimeError('should not get there', char)
         buf += data
     if bits:
-        buf += pack('>%sB' % len(bits), *bits)
+        buf += _pack('>%sB' % len(bits), *bits)
     return buf
 
 
@@ -205,8 +206,9 @@ def dump_frame_content(channel_id, content, max_frame_size):
     buf = bytearray()
     data = content.dump()
     buf += _dump_frame(FRAME_CONTENT_HEADER, channel_id, data)
+    body = content.body
     for idx in range(0, content.body_size, max_frame_size):
-        chunk = content.body[idx:idx + max_frame_size]
+        chunk = body[idx:idx + max_frame_size]
         buf += _dump_frame(FRAME_CONTENT_BODY, channel_id, chunk)
     return bytes(buf)
 
@@ -219,7 +221,7 @@ def _dump_frame(frame_type, channel_id, data):
     return dump('BHL', frame_type, channel_id, len(data)) + data + b'\xCE'
 
 
-def _dump_item(value):
+def _dump_item(value, _pack=pack):
     if isinstance(value, bool):
         data = b't' + b'\x01' if value else b'\x00'
     elif isinstance(value, int):
@@ -227,24 +229,24 @@ def _dump_item(value):
                 ('b', 'B', 's', 'u', 'I', 'i', 'l'),
                 ('>B', '>b', '>h', '>H', '>l', '>L', '>q')):
             try:
-                data = kind + pack(spec, value)
+                data = kind + _pack(spec, value)
                 break
             except error:
                 continue
         else:
             raise ValueError(
-                'cannot pack {} into amqp integer types'.format(value)
+                'cannot _pack {} into amqp integer types'.format(value)
             )
     elif isinstance(value, float):
         for kind, spec in zip(('f', 'd'), ('>f', '>d')):
             try:
-                data = kind + pack(spec, value)
+                data = kind + _pack(spec, value)
                 break
             except error:
                 continue
         else:
             raise ValueError(
-                'cannot pack {} into amqp float types'.format(value)
+                'cannot _pack {} into amqp float types'.format(value)
             )
     elif isinstance(value, Decimal):
         sign, digits, exponent = value.as_tuple()
@@ -253,7 +255,7 @@ def _dump_item(value):
             v = (v * 10) + digit
         if sign:
             v = -v
-        data = pack('>cBl', b'D', -exponent, v)
+        data = _pack('>cBl', b'D', -exponent, v)
     elif isinstance(value, str):
         data = b'S' + dump('S', value)
     elif isinstance(value, (list, tuple)):
@@ -261,7 +263,7 @@ def _dump_item(value):
         for item in value:
             stream2.write(_dump_item(item))
         payload = stream2.getvalue()
-        data = b'A' + pack('>L', len(payload)) + payload
+        data = b'A' + _pack('>L', len(payload)) + payload
     elif isinstance(value, datetime):
         data = b't' + dump('t', value)
     elif isinstance(value, dict):
@@ -269,7 +271,7 @@ def _dump_item(value):
     elif value is None:
         data = b'V'
     elif isinstance(value, bytes):
-        data = pack('>L', len(value)) + value
+        data = _pack('>L', len(value)) + value
     else:
         raise RuntimeError('should not get there', value)
     return data
