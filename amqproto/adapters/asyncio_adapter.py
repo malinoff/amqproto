@@ -9,7 +9,7 @@ from async_generator import async_generator, yield_
 
 from ..connection import Connection
 from ..channel import Channel, BaseChannel
-from ..replies import Reply, AsynchronousReply, InternalError
+from ..replies import Reply, AsynchronousReply
 from ..methods import BasicDeliver, BasicReturn, ChannelClose, ConnectionClose
 
 
@@ -113,15 +113,12 @@ class AsyncioBaseChannel(BaseChannel):
         return self
 
     async def __aexit__(self, exc_type, exc, traceback):
-        #if exc is not None:
-        #    if not isinstance(exc, Reply):
-        #        exc = InternalError(reply_text=repr(exc))
-        #    await self.close(
-        #        exc.reply_code, exc.reply_text, exc.class_id, exc.method_id,
-        #    )
-        #else:
-        #    await self.close()
-        await self.close()
+        if isinstance(exc, Reply):
+            await self.close(
+                exc.reply_code, exc.reply_text, exc.class_id, exc.method_id,
+            )
+        else:
+            await self.close()
 
 
 class AsyncioChannel(AsyncioBaseChannel, Channel):
