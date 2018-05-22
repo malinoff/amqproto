@@ -41,7 +41,7 @@ async def main():
                             )
                         )
                         await channel.basic_publish(
-                            reply_message,
+                            reply_message.encode('utf-8'),
                             exchange='',
                             routing_key=message.properties.reply_to
                         )

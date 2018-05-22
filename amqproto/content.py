@@ -30,18 +30,18 @@ class Properties:
 
     @classmethod
     def load(cls, stream):
-        property_flags = []
-        while True:
-            flags = bin(load('H', stream)[0])[2:]
-            property_flags.extend(flag == '1' for flag in flags[:-1])
-            if flags[-1] == '0':
-                break
-        spec = [
-            char
-            for char, present in zip(cls.spec, property_flags)
-            if present
-        ]
-        return cls(*load(spec, stream))
+        # TODO support for the 16th bit set
+        prop_names = []
+        spec = []
+        flags = load('H', stream)[0]
+        bit = 1 << 15
+        for char, name in zip(cls.spec, cls._field_names):
+            if flags & bit:
+                spec.append(char)
+                prop_names.append(name)
+            bit >>= 1
+        props = load(spec, stream)
+        return cls(**dict(zip(prop_names, props)))
 
     def dump(self):
         # TODO support for the 16th bit set
@@ -55,7 +55,6 @@ class Properties:
                 spec.append(char)
                 props.append(prop)
                 flags |= 1 << (15 - idx)
-
         return dump(spec, flags, *props)
 
 
@@ -75,7 +74,8 @@ class Content:
     def __attrs_post_init__(self):
         if self.body_size is None:
             self.body_size = len(self.body)
-        self.properties = Properties.BY_ID[self.class_id]()
+        if self.properties is None:
+            self.properties = Properties.BY_ID[self.class_id]()
 
     def complete(self):
         """AMQP allows to break content into multiple chunks for sending.
@@ -104,7 +104,7 @@ class Content:
         return header + properties
 
 
-@Properties.register(spec='ssTBBsssstssss', class_id=60)
+@Properties.register(spec='ssTBBsssstsssss', class_id=60)
 @attr.s(slots=True)
 class BasicProperties(Properties):
     """Basic properties."""
@@ -124,6 +124,7 @@ class BasicProperties(Properties):
     app_id = attr.ib(None)
     # Deprecated
     cluster_id = attr.ib(default=None, init=False, repr=False)
+    _reserved = attr.ib(default=None, init=False, repr=False)
 
 
 @Content.register(class_id=60)
