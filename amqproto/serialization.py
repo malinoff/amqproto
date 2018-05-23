@@ -14,14 +14,26 @@ FRAME_CONTENT_BODY = 3
 FRAME_HEARTBEAT = 8
 
 
+class IncompleteData(Exception):
+    """
+    Raises when the parser can't read enough bytes from the stream.
+    """
+
+
+def _read(stream, length):
+    data = stream.read(length)
+    if len(data) != length:
+        raise IncompleteData
+    return data
+
+
 def load(fmt: str, stream: BytesIO, _unpack=unpack):
     values = []
     bitcount = bits = 0
-    read = stream.read
     for char in fmt:
         if char == '?':
             if not bitcount:
-                bits = _unpack('>B', read(1))[0]
+                bits = _unpack('>B', _read(stream, 1))[0]
                 bitcount = 8
             value = (bits & 1) == 1
             bits >>= 1
@@ -29,27 +41,27 @@ def load(fmt: str, stream: BytesIO, _unpack=unpack):
         else:
             bitcount = bits = 0
         if char == 'B':
-            value = _unpack('>B', read(1))[0]
+            value = _unpack('>B', _read(stream, 1))[0]
         elif char == 'H':
-            value = _unpack('>H', read(2))[0]
+            value = _unpack('>H', _read(stream, 2))[0]
         elif char == 'L':
-            value = _unpack('>L', read(4))[0]
+            value = _unpack('>L', _read(stream, 4))[0]
         elif char == 'Q':
-            value = _unpack('>Q', read(8))[0]
+            value = _unpack('>Q', _read(stream, 8))[0]
         elif char == 's':
-            length = _unpack('>B', read(1))[0]
-            value = _unpack('>%ss' % length, read(length))[0]
+            length = _unpack('>B', _read(stream, 1))[0]
+            value = _unpack('>%ss' % length, _read(stream, length))[0]
             value = value.decode('utf-8', 'surrogatepass')
         elif char == 'S':
-            length = _unpack('>L', read(4))[0]
-            value = _unpack('>%ss' % length, read(length))[0]
+            length = _unpack('>L', _read(stream, 4))[0]
+            value = _unpack('>%ss' % length, _read(stream, length))[0]
             value = value.decode('utf-8', 'surrogatepass')
         elif char == 't':
-            timestamp = _unpack('>Q', read(8))[0]
+            timestamp = _unpack('>Q', _read(stream, 8))[0]
             value = datetime.utcfromtimestamp(timestamp)
         elif char == 'T':
             value = {}
-            length = _unpack('>L', read(4))[0]
+            length = _unpack('>L', _read(stream, 4))[0]
             start = stream.tell()
             while stream.tell() - start < length:
                 key = load('s', stream)[0]
@@ -61,7 +73,7 @@ def load(fmt: str, stream: BytesIO, _unpack=unpack):
 
 
 def parse_protocol_header(stream):
-    prefix, *version = unpack('>5sBBB', stream.read(8))
+    prefix, *version = unpack('>5sBBB', _read(stream, 8))
     assert prefix == b'AMQP\x00'
     return version
 
@@ -71,7 +83,7 @@ def parse_frames(stream):
         old = stream.tell()
         try:
             yield _parse_frame(stream)
-        except error:
+        except IncompleteData as exc:
             stream.seek(old)
             break
 
@@ -87,48 +99,47 @@ def _parse_frame(stream):
         payload = Content.load(stream)
     elif frame_type == FRAME_CONTENT_BODY:
         kind = 'content_body'
-        payload = stream.read(length)
+        payload = _read(stream, length)
     elif frame_type == FRAME_HEARTBEAT:
         kind = 'heartbeat'
     else:
-        raise error('could not parse frame')
-    end = stream.read(1)
+        raise error('unknown frame type %s' % frame_type)
+    end = _read(stream, 1)
     if end != b'\xCE':
-        raise error('could not parse frame end')
+        raise error('wrong frame end %r' % end)
     return channel_id, kind, payload
 
 
 def _load_item(stream, _unpack=unpack):
-    read = stream.read
-    kind = read(1)
+    kind = _read(stream, 1)
     if kind == b't':
-        return _unpack('>?', read(1))[0]
+        return _unpack('>?', _read(stream, 1))[0]
     elif kind == b'b':
-        return _unpack('>b', read(1))[0]
+        return _unpack('>b', _read(stream, 1))[0]
     elif kind == b'B':
-        return _unpack('>B', read(1))[0]
+        return _unpack('>B', _read(stream, 1))[0]
     elif kind == b's':
-        return _unpack('>h', read(2))[0]
+        return _unpack('>h', _read(stream, 2))[0]
     elif kind == b'u':
-        return _unpack('>H', read(2))[0]
+        return _unpack('>H', _read(stream, 2))[0]
     elif kind == b'I':
-        return _unpack('>l', read(4))[0]
+        return _unpack('>l', _read(stream, 4))[0]
     elif kind == b'i':
-        return _unpack('>L', read(4))[0]
+        return _unpack('>L', _read(stream, 4))[0]
     elif kind == b'l':
-        return _unpack('>q', read(8))[0]
+        return _unpack('>q', _read(stream, 8))[0]
     elif kind == b'f':
-        return _unpack('>f', read(4))[0]
+        return _unpack('>f', _read(stream, 4))[0]
     elif kind == b'd':
-        return _unpack('>d', read(8))[0]
+        return _unpack('>d', _read(stream, 8))[0]
     elif kind == b'D':
-        exponent, value = _unpack('>Bl', read(5))
+        exponent, value = _unpack('>Bl', _read(stream, 5))
         return Decimal(value) / Decimal(10 ** exponent)
     elif kind == b'S':
         return load('S', stream)[0]
     elif kind == b'A':
         array = []
-        length = _unpack('>L', stream.read(4))[0]
+        length = _unpack('>L', _read(stream, 4))[0]
         start = stream.tell()
         while stream.tell() - start < length:
             array.append(_load_item(stream))
@@ -140,8 +151,8 @@ def _load_item(stream, _unpack=unpack):
     elif kind == b'V':
         return None
     elif kind == b'x':
-        length = _unpack('>L', read(4))[0]
-        return read(length)
+        length = _unpack('>L', _read(stream, 4))[0]
+        return _read(stream, length)
     else:
         raise RuntimeError('should not get there', kind)
 
@@ -277,5 +288,5 @@ def _dump_item(value, _pack=pack):
     return data
 
 
-from .methods import Method
-from .content import Content
+from .methods import Method  # noqa
+from .content import Content  # noqa
