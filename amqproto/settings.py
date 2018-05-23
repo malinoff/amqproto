@@ -12,12 +12,6 @@ import attr
 
 FRAME_MIN_SIZE = 4096
 
-# The properties SHOULD contain at least these fields:
-# * "product", giving the name of the client product,
-# * "version", giving the name of the client version,
-# * "platform", giving the name of the operating system,
-# * "copyright", if appropriate, and
-# * "information", giving other general information.
 DEFAULT_CLIENT_PROPERTIES = {
     'product': 'amqproto',
     'version': str(pkg_resources.get_distribution('amqproto').version),
