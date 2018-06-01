@@ -1,17 +1,30 @@
+from enum import Enum
 from io import BytesIO
 from decimal import Decimal
 from calendar import timegm
 from datetime import datetime
 from struct import pack, unpack, error
+from typing import Iterable, Tuple, Union
 
-__all__ = ['load', 'parse_protocol_header', 'parse_frames',
+__all__ = ['FrameType', 'load', 'parse_protocol_header', 'parse_frames',
            'dump', 'dump_protocol_header', 'dump_frame_method',
            'dump_frame_content', 'dump_frame_heartbeat']
 
-FRAME_METHOD = 1
-FRAME_CONTENT_HEADER = 2
-FRAME_CONTENT_BODY = 3
-FRAME_HEARTBEAT = 8
+
+class FrameType(Enum):
+    METHOD = 1
+    CONTENT_HEADER = 2
+    CONTENT_BODY = 3
+    HEARTBEAT = 8
+
+
+# I'd love to use typing.NamedTuple here, but we support py 3.5
+# because of pypy3.
+_Frame = Tuple[
+    int,  # channel_id
+    FrameType,
+    Union['Method', 'Content', bytes],
+]
 
 
 class IncompleteData(Exception):
@@ -20,14 +33,85 @@ class IncompleteData(Exception):
     """
 
 
-def _read(stream, length):
-    data = stream.read(length)
-    if len(data) != length:
-        raise IncompleteData
-    return data
+def parse_protocol_header(stream: BytesIO) -> Tuple[int, int, int]:
+    """
+    Parse protocol header from the stream.
+    """
+    prefix, *version = unpack('>5sBBB', _read(stream, 8))
+    if prefix != b'AMQP\x00':
+        raise ValueError("wrong protocol, expected b'AMQP\x00', got {}".format(
+            prefix
+        ))
+    return version
+
+
+def parse_frames(stream: BytesIO) -> Iterable[_Frame]:
+    """
+    Parse and yield frames from the stream.
+    This function properly handles situations when the data is incomplete,
+    and can raise an exception when parsing fails.
+    """
+    while True:
+        old = stream.tell()
+        try:
+            yield _parse_frame(stream)
+        except IncompleteData as exc:
+            stream.seek(old)
+            break
+
+
+def dump_protocol_header(major: int, minor: int, revision: int) -> bytes:
+    """
+    Serialize a protocol header.
+    """
+    return pack('>5sBBB', b'AMQP\x00', major, minor, revision)
+
+
+def dump_frame_method(channel_id: int, method: 'Method') -> bytes:
+    """
+    Serialize a method frame.
+    """
+    return _dump_frame(FrameType.METHOD.value, channel_id, method.dump())
+
+
+def dump_frame_content(channel_id: int, content: 'Content',
+                       max_frame_size: int) -> bytes:
+    """
+    Serialize a content (content header frame + content body frame).
+    """
+    buf = bytearray()
+    data = content.dump()
+    buf += _dump_frame(FrameType.CONTENT_HEADER.value, channel_id, data)
+    body = content.body
+    for idx in range(0, content.body_size, max_frame_size):
+        chunk = body[idx:idx + max_frame_size]
+        buf += _dump_frame(FrameType.CONTENT_BODY.value, channel_id, chunk)
+    return bytes(buf)
+
+
+def dump_frame_heartbeat(channel_id: int) -> bytes:
+    """
+    Serialize a heartbeat frame into bytes.
+    """
+    return _dump_frame(FrameType.HEARTBEAT.value, channel_id, b'')
 
 
 def load(fmt: str, stream: BytesIO, _unpack=unpack):
+    """
+    Parse stream according to the provided format, this function is similar
+    to ``struct.unpack``.
+
+    Valid format chars are:
+        '?' - bool
+        'B' - octet
+        'H' - short
+        'L' - long
+        'Q' - long long
+        's' - short string
+        'S' - long string
+        't' - timestamp
+        'T' - table
+    """
     values = []
     bitcount = bits = 0
     for char in fmt:
@@ -62,102 +146,36 @@ def load(fmt: str, stream: BytesIO, _unpack=unpack):
         elif char == 'T':
             value = {}
             length = _unpack('>L', _read(stream, 4))[0]
-            start = stream.tell()
-            while stream.tell() - start < length:
-                key = load('s', stream)[0]
-                value[key] = _load_item(stream)
+            stream2 = BytesIO(_read(stream, length))
+            while stream2.tell() < length:
+                key = load('s', stream2)[0]
+                value[key] = _load_item(stream2)
         elif char != '?':
-            raise RuntimeError('should not get there', char)
+            raise ValueError('wrong format char', char)
         values.append(value)
     return values
 
 
-def parse_protocol_header(stream):
-    prefix, *version = unpack('>5sBBB', _read(stream, 8))
-    assert prefix == b'AMQP\x00'
-    return version
+def dump(fmt: str, *values, _pack=pack) -> bytes:
+    """
+    Serialize values to bytes according to the provided format,
+    this function is similar to ``struct.pack``.
 
-
-def parse_frames(stream):
-    while True:
-        old = stream.tell()
-        try:
-            yield _parse_frame(stream)
-        except IncompleteData as exc:
-            stream.seek(old)
-            break
-
-
-def _parse_frame(stream):
-    frame_type, channel_id, length = load('BHL', stream)  # noqa: F841
-    kind = payload = None
-    if frame_type == FRAME_METHOD:
-        kind = 'method'
-        payload = Method.load(stream)
-    elif frame_type == FRAME_CONTENT_HEADER:
-        kind = 'content_header'
-        payload = Content.load(stream)
-    elif frame_type == FRAME_CONTENT_BODY:
-        kind = 'content_body'
-        payload = _read(stream, length)
-    elif frame_type == FRAME_HEARTBEAT:
-        kind = 'heartbeat'
-    else:
-        raise error('unknown frame type %s' % frame_type)
-    end = _read(stream, 1)
-    if end != b'\xCE':
-        raise error('wrong frame end %r' % end)
-    return channel_id, kind, payload
-
-
-def _load_item(stream, _unpack=unpack):
-    kind = _read(stream, 1)
-    if kind == b't':
-        return _unpack('>?', _read(stream, 1))[0]
-    elif kind == b'b':
-        return _unpack('>b', _read(stream, 1))[0]
-    elif kind == b'B':
-        return _unpack('>B', _read(stream, 1))[0]
-    elif kind == b's':
-        return _unpack('>h', _read(stream, 2))[0]
-    elif kind == b'u':
-        return _unpack('>H', _read(stream, 2))[0]
-    elif kind == b'I':
-        return _unpack('>l', _read(stream, 4))[0]
-    elif kind == b'i':
-        return _unpack('>L', _read(stream, 4))[0]
-    elif kind == b'l':
-        return _unpack('>q', _read(stream, 8))[0]
-    elif kind == b'f':
-        return _unpack('>f', _read(stream, 4))[0]
-    elif kind == b'd':
-        return _unpack('>d', _read(stream, 8))[0]
-    elif kind == b'D':
-        exponent, value = _unpack('>Bl', _read(stream, 5))
-        return Decimal(value) / Decimal(10 ** exponent)
-    elif kind == b'S':
-        return load('S', stream)[0]
-    elif kind == b'A':
-        array = []
-        length = _unpack('>L', _read(stream, 4))[0]
-        start = stream.tell()
-        while stream.tell() - start < length:
-            array.append(_load_item(stream))
-        return array
-    elif kind == b'T':
-        return load('t', stream)[0]
-    elif kind == b'F':
-        return load('T', stream)[0]
-    elif kind == b'V':
-        return None
-    elif kind == b'x':
-        length = _unpack('>L', _read(stream, 4))[0]
-        return _read(stream, length)
-    else:
-        raise RuntimeError('should not get there', kind)
-
-
-def dump(fmt, *values, _pack=pack):
+    Valid format chars are:
+        '?' - bool
+        'B' - octet
+        'H' - short
+        'L' - long
+        'Q' - long long
+        's' - short string
+        'S' - long string
+        't' - timestamp
+        'T' - table
+    """
+    if len(fmt) != len(values):
+        raise ValueError('required to dump {} values, got {}'.format(
+            len(fmt), len(values)
+        ))
     buf = bytearray()
     bitcount, bits = 0, []
     for char, value in zip(fmt, values):
@@ -205,34 +223,85 @@ def dump(fmt, *values, _pack=pack):
     return buf
 
 
-def dump_protocol_header(major, minor, revision):
-    return pack('>5sBBB', b'AMQP\x00', major, minor, revision)
+def _read(stream: BytesIO, length: int):
+    data = stream.read(length)
+    if len(data) != length:
+        raise IncompleteData('tried to read {} bytes, got {} bytes'.format(
+            length, len(data)
+        ))
+    return data
 
 
-def dump_frame_method(channel_id, method):
-    return _dump_frame(FRAME_METHOD, channel_id, method.dump())
+def _parse_frame(stream: BytesIO, _unpack=unpack):
+    frame_type, channel_id, length = _unpack('>BHL', _read(stream, 7))
+    frame_type = FrameType(frame_type)
+    payload = None
+    if frame_type is FrameType.METHOD:
+        payload = Method.load(stream)
+    elif frame_type is FrameType.CONTENT_HEADER:
+        payload = Content.load(stream)
+    elif frame_type is FrameType.CONTENT_BODY:
+        payload = _read(stream, length)
+    elif frame_type is FrameType.HEARTBEAT:
+        pass
+    end = _read(stream, 1)
+    if end != b'\xCE':
+        raise error('wrong frame end %r' % end)
+    return channel_id, frame_type, payload
 
 
-def dump_frame_content(channel_id, content, max_frame_size):
-    buf = bytearray()
-    data = content.dump()
-    buf += _dump_frame(FRAME_CONTENT_HEADER, channel_id, data)
-    body = content.body
-    for idx in range(0, content.body_size, max_frame_size):
-        chunk = body[idx:idx + max_frame_size]
-        buf += _dump_frame(FRAME_CONTENT_BODY, channel_id, chunk)
-    return bytes(buf)
+def _load_item(stream: BytesIO, _unpack=unpack):
+    kind = _read(stream, 1)
+    if kind == b't':
+        return _unpack('>?', _read(stream, 1))[0]
+    elif kind == b'b':
+        return _unpack('>b', _read(stream, 1))[0]
+    elif kind == b'B':
+        return _unpack('>B', _read(stream, 1))[0]
+    elif kind == b's':
+        return _unpack('>h', _read(stream, 2))[0]
+    elif kind == b'u':
+        return _unpack('>H', _read(stream, 2))[0]
+    elif kind == b'I':
+        return _unpack('>l', _read(stream, 4))[0]
+    elif kind == b'i':
+        return _unpack('>L', _read(stream, 4))[0]
+    elif kind == b'l':
+        return _unpack('>q', _read(stream, 8))[0]
+    elif kind == b'f':
+        return _unpack('>f', _read(stream, 4))[0]
+    elif kind == b'd':
+        return _unpack('>d', _read(stream, 8))[0]
+    elif kind == b'D':
+        exponent, value = _unpack('>Bl', _read(stream, 5))
+        return Decimal(value) / Decimal(10 ** exponent)
+    elif kind == b'S':
+        return load('S', stream)[0]
+    elif kind == b'A':
+        array = []
+        length = _unpack('>L', _read(stream, 4))[0]
+        start = stream.tell()
+        while stream.tell() - start < length:
+            array.append(_load_item(stream))
+        return array
+    elif kind == b'T':
+        return load('t', stream)[0]
+    elif kind == b'F':
+        return load('T', stream)[0]
+    elif kind == b'V':
+        return None
+    elif kind == b'x':
+        length = _unpack('>L', _read(stream, 4))[0]
+        return _read(stream, length)
+    else:
+        raise RuntimeError('should not get there', kind)
 
 
-def dump_frame_heartbeat(channel_id):
-    return _dump_frame(FRAME_HEARTBEAT, channel_id, b'')
-
-
-def _dump_frame(frame_type, channel_id, data):
+def _dump_frame(frame_type: FrameType, channel_id: int, data: bytes) -> bytes:
     return dump('BHL', frame_type, channel_id, len(data)) + data + b'\xCE'
 
 
-def _dump_item(value, _pack=pack):
+def _dump_item(value, _pack=pack) -> bytes:
     if isinstance(value, bool):
         data = b't' + b'\x01' if value else b'\x00'
     elif isinstance(value, int):
@@ -288,5 +357,6 @@ def _dump_item(value, _pack=pack):
     return data
 
 
+# Avoid circular imports problem.
 from .methods import Method  # noqa
 from .content import Content  # noqa

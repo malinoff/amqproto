@@ -106,19 +106,19 @@ class Connection(BaseChannel):
         for channel_id, frame_type, payload in parse_frames(stream):
             # pylint: disable=protected-access
             channel = self.channels[channel_id]
-            if frame_type == 'method':
+            if frame_type.name == 'METHOD':
                 received_methods[channel_id].extend(
                     channel._handle_method(payload)
                 )
-            elif frame_type == 'content_header':
+            elif frame_type.name == 'CONTENT_HEADER':
                 received_methods[channel_id].extend(
                     channel._handle_content_header(payload)
                 )
-            elif frame_type == 'content_body':
+            elif frame_type.name == 'CONTENT_BODY':
                 received_methods[channel_id].extend(
                     channel._handle_content_body(payload)
                 )
-            elif frame_type == 'heartbeat':
+            elif frame_type.name == 'HEARTBEAT':
                 pass
         self._inbound_buffer = bytearray(stream.read())
         return received_methods
