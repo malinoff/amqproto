@@ -3,13 +3,13 @@ import asyncio
 try:
     from asyncio import run
 except ImportError:
-    run = None
+    from ._asyncio_compat import run  # noqa
 
 from async_generator import async_generator, yield_
 
 from ..connection import Connection
 from ..channel import Channel, BaseChannel
-from ..replies import Reply, AsynchronousReply
+from ..replies import Reply, AsynchronousReply, ConnectionAborted
 from ..methods import BasicDeliver, BasicReturn, ChannelClose, ConnectionClose
 
 
@@ -21,7 +21,10 @@ class AsyncioBaseChannel(BaseChannel):
         # The server can send us two things: a response to a method or
         # a connection/channel exception.
         self._response = asyncio.Queue(maxsize=1)
-        self._exception = asyncio.Queue(maxsize=1)
+        self._server_exception = asyncio.Queue(maxsize=1)
+        # A client exception can also happen in
+        # AsyncioConnection._communicate.
+        self._client_exception = asyncio.Queue(maxsize=1)
 
         self._write_limit = write_limit
         self._wrote_without_response = 0
@@ -42,10 +45,9 @@ class AsyncioBaseChannel(BaseChannel):
             # await channel.method(no_wait=True)  [raises the exception]
 
             # Raising the exception from the second call is at least
-            # confusing, but yet I don't know a better way to inform
-            # the user about the error. Maybe wrapping the exception into a
-            # some sort of DelayedError is worth exploring.
-            exc = await self._exception.get()
+            # confusing, but I don't know a better way to inform
+            # the user about the error.
+            exc = await self._server_exception.get()
             raise AsynchronousReply(exc)
         logging.info('[channel_id %s] sending %s', self.channel_id, method)
         super()._prepare_for_sending(method)
@@ -70,21 +72,24 @@ class AsyncioBaseChannel(BaseChannel):
                 await asyncio.sleep(0)
                 self._wrote_without_response = 0
             return
+        self._wrote_without_response = 0
         # If there is a response, then we can handle possible errors
         # right here, yay!
+        return await self._result_or_exception(self._response.get())
+
+    async def _result_or_exception(self, coro=None):
+        fs = [self._client_exception.get(), self._server_exception.get()]
+        if coro is not None:
+            fs.append(coro)
         done, pending = await asyncio.wait(
-            fs=(self._response.get(), self._exception.get()),
-            return_when=asyncio.FIRST_COMPLETED,
+            fs, timeout=2, return_when=asyncio.FIRST_COMPLETED
         )
-        # There is a situation when both .get() calls may be done
-        # at that point: a race condition, in which both client and server
-        # close the channel. Client - normally, server - via an exception.
-        # In that case, `pending` is empty.
         for task in pending:
             task.cancel()
+        response = None
         for task in done:
             response = await task
-            if isinstance(response, Reply):
+            if isinstance(response, Exception):
                 raise response
         return response
 
@@ -153,7 +158,7 @@ class AsyncioChannel(AsyncioBaseChannel, Channel):
     async def _handle_channel_close(self, method):
         await super()._handle_channel_close(method)
         exc = Reply.from_close_method(method)
-        await self._exception.put(exc)
+        await self._server_exception.put(exc)
         self.state = 'closed'
 
     @async_generator
@@ -188,8 +193,7 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
         return AsyncioChannel(self._writer, self._write_limit, channel_id)
 
     async def _handle_connection_tune(self, method):
-        loop = asyncio.get_event_loop()
-        self._heartbeat_task = loop.create_task(self._start_heartbeat())
+        self._heartbeat_task = asyncio.ensure_future(self._start_heartbeat())
 
         await super()._handle_connection_tune(method)
         self._negotiation.set()
@@ -216,10 +220,9 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
         self.initiate_connection()
         self._writer.write(self.data_to_send())
 
-        loop = asyncio.get_event_loop()
-        self._communicate_task = loop.create_task(self._communicate())
+        self._communicate_task = asyncio.ensure_future(self._communicate())
 
-        await self._negotiation.wait()
+        await self._result_or_exception(self._negotiation.wait())
         await self._connection_open()
 
     async def close(self, reply_code=200, reply_text='OK',
@@ -243,93 +246,21 @@ class AsyncioConnection(AsyncioBaseChannel, Connection):
     async def _handle_connection_close(self, method):
         await super()._handle_connection_close(method)
         exc = Reply.from_close_method(method)
-        await self._exception.put(exc)
+        await self._server_exception.put(exc)
         self.state = 'closed'
 
     async def _communicate(self):
-        transport_closing = self._writer.transport.is_closing
-        while self.state in {'opening', 'open'} and not transport_closing():
-            frame_max = self.negotiated_settings.frame_max
-            data = await self._reader.read(frame_max)
-            if not data:
-                break  # XXX how to handle this properly?
-            for channel_id, methods in self.parse_data(data).items():
-                channel = self.channels[channel_id]
-                for method in methods:
-                    await channel._receive_method(method)
-
-
-if run is None:
-
-    # Copy-pasted from https://github.com/python/asyncio/pull/465
-    def _cleanup(main_task, loop):
-        pending = []
-        if not main_task.done():
-            pending.append(main_task)
         try:
-            # `shutdown_asyncgens` was added in Python 3.6; not all
-            # event loops might support it.
-            shutdown_asyncgens = loop.shutdown_asyncgens
-            pending.append(shutdown_asyncgens())
-        except AttributeError:
-            pass
-
-        try:
-            if pending:
-                pending = asyncio.gather(*pending)
-                loop.run_until_complete(pending)
-            main_task.result()
-        finally:
-            asyncio.set_event_loop(None)
-            loop.close()
-
-    def run(main, *, debug=False):
-        """Run a coroutine.
-
-        This function runs the passed coroutine, taking care of
-        managing the asyncio event loop and finalizing asynchronous
-        generators.
-
-        This function cannot be called when another asyncio event loop
-        is running.
-
-        If debug is True, the event loop will be run in debug mode.
-
-        This function handles KeyboardInterrupt exception in a way that
-        the passed coroutine gets cancelled and KeyboardInterrupt
-        is ignored. Therefore, to clean up an asyncio.CancelledError
-        exception should be caught within the passed coroutine.
-
-        This function should be used as a main entry point for
-        asyncio programs, and should not be used to call asynchronous
-        APIs.
-
-        Example:
-
-            from amqproto.io.asyncio import run
-
-            async def main():
-                await asyncio.sleep(1)
-                print('hello')
-
-            run(main())
-        """
-        if asyncio._get_running_loop() is not None:
-            raise RuntimeError(
-                "run() cannot be called from a running event loop")
-        if not asyncio.iscoroutine(main):
-            raise ValueError("a coroutine was expected, got {!r}".format(main))
-
-        loop = asyncio.new_event_loop()
-        main_task = loop.create_task(main)
-        try:
-            asyncio.set_event_loop(loop)
-
-            if debug:
-                loop.set_debug(True)
-
-            return loop.run_until_complete(main_task)
-        except KeyboardInterrupt:
-            main_task.cancel()
-        finally:
-            _cleanup(main_task, loop)
+            transport_closing = self._writer.transport.is_closing
+            while (self.state in {'opening', 'open'} and
+                    not transport_closing()):
+                frame_max = self.negotiated_settings.frame_max
+                data = await self._reader.read(frame_max)
+                if not data:
+                    raise ConnectionAborted
+                for channel_id, methods in self.parse_data(data).items():
+                    channel = self.channels[channel_id]
+                    for method in methods:
+                        await channel._receive_method(method)
+        except Exception as exc:
+            await self._client_exception.put(exc)
