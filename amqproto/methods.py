@@ -59,8 +59,8 @@ class ConnectionStart(Method):
     version_major = attr.ib(default=0)
     version_minor = attr.ib(default=9)
     server_properties = attr.ib(default=attr.Factory(dict))
-    mechanisms = attr.ib(default=attr.Factory(lambda: ['PLAIN']))
-    locales = attr.ib(default=attr.Factory(lambda: ['EN_US']))
+    mechanisms = attr.ib(default=attr.Factory(lambda: 'PLAIN'))
+    locales = attr.ib(default=attr.Factory(lambda: 'EN_US'))
 
 
 @Method.register(spec='TsSs', class_id=10, method_id=11,
@@ -381,7 +381,7 @@ class BasicConsume(Method):
     arguments = attr.ib()
 
 
-@Method.register(spec='s', class_id=60, method_id=21,
+@Method.register(spec='H', class_id=60, method_id=21,
                  response_to=BasicConsume)
 @attr.s(slots=True)
 class BasicConsumeOK(Method):
@@ -560,4 +560,5 @@ class ConfirmSelectOK(Method):
     pass
 
 
-from .serialization import load, dump
+# Avoid circular imports problem.
+from .serialization import load, dump  # noqa
