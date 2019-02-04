@@ -381,7 +381,7 @@ class BasicConsume(Method):
     arguments = attr.ib()
 
 
-@Method.register(spec='H', class_id=60, method_id=21,
+@Method.register(spec='s', class_id=60, method_id=21,
                  response_to=BasicConsume)
 @attr.s(slots=True)
 class BasicConsumeOK(Method):
